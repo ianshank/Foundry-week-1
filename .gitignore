@@ -27,3 +27,8 @@ dist/
 build/
 .uv/
 .DS_Store
+.eval-runs/
+bad_target/
+mock_findings/
+mock_pass/
+scratch/

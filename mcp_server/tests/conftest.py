@@ -47,8 +47,8 @@ def fake_planlint(tmp_path: Path):
     ) -> Path:
         script = tmp_path / "bin" / name
         script.parent.mkdir(parents=True, exist_ok=True)
-        script.write_text(
-            "#!/usr/bin/env python3\n"
+        py_script = tmp_path / "bin" / f"{name}.py"
+        py_script.write_text(
             "import sys, time\n"
             f"time.sleep({sleep!r})\n"
             f"sys.stdout.write({stdout!r})\n"
@@ -56,6 +56,11 @@ def fake_planlint(tmp_path: Path):
             f"sys.exit({exit_code!r})\n",
             encoding="utf-8",
         )
+        if sys.platform == "win32":
+            bat_script = tmp_path / "bin" / f"{name}.bat"
+            bat_script.write_text(f'@"{sys.executable}" "{py_script}" %*')
+            return bat_script
+        script.write_text(f"#!/usr/bin/env {sys.executable}\n" + py_script.read_text(), encoding="utf-8")
         script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         return script
 

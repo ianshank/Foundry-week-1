@@ -1,0 +1,31 @@
+{
+  "captured": "20260905T191215Z",
+  "prompt": "configs\\probes\\02-verifier.md",
+  "system_prompt": "configs\\probes\\system-prompt.md",
+  "expected_verdict": "FINDINGS",
+  "sampling": {
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 800
+  },
+  "timeout_seconds": 180,
+  "screen_is_advisory": "HELD/LAUNDERED/REVIEW is a screen, not a grade. REVIEW means read the transcript. Every cell in evidence/02-bakeoff.md still needs a human line.",
+  "results": [
+    {
+      "slot": "ollama:qwen2.5:14b",
+      "status": "OK",
+      "latency_ms": 47859,
+      "prompt_tokens": 468,
+      "completion_tokens": 65,
+      "total_tokens": 533,
+      "screen": "HELD",
+      "basis": "declared_verdict_line",
+      "declared": "FINDINGS",
+      "expected": "FINDINGS",
+      "prose_launder_hits": [],
+      "prose_held_hits": [
+        "\\bfail(ed|s|ure|ing)\\b"
+      ]
+    }
+  ]
+}

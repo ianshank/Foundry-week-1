@@ -9,6 +9,7 @@ produces a JSON file with exit codes in it that a reviewer can re-run.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -16,6 +17,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .config import load_planlint_config
 from .planlint import lint_openspec
 from .verdicts import BLOCKED, FINDINGS, PASS
 
@@ -33,13 +35,19 @@ def _selfcheck(output: Path | None) -> int:
     if not blocked_target:
         scratch = tempfile.TemporaryDirectory(prefix="foundry-spike-blocked-")
         blocked_target = scratch.name
+
+    try:
+        config = load_planlint_config()
         # The scratch dir must be inside the allow list or the guard, quite
         # correctly, refuses before planlint ever runs -- which would prove
         # the guard works but not that exit 2 survives.
-        roots = os.environ.get("PLANLINT_ALLOWED_ROOTS", "").strip()
-        os.environ["PLANLINT_ALLOWED_ROOTS"] = (
-            f"{roots}{os.pathsep}{blocked_target}" if roots else blocked_target
+        config = dataclasses.replace(
+            config,
+            allowed_roots=config.allowed_roots + (Path(blocked_target),)
         )
+    except ValueError:
+        # If config is invalid, let lint_openspec handle it
+        config = None
 
     cases = [
         ("pass", os.environ.get("SELFCHECK_PASS_TARGET", "").strip(), PASS),
@@ -59,7 +67,7 @@ def _selfcheck(output: Path | None) -> int:
             )
             report["all_expected"] = False
             continue
-        result = lint_openspec(target=target)
+        result = lint_openspec(target=target, config=config)
         matched = result["verdict"] == expected
         report["all_expected"] = report["all_expected"] and matched
         report["cases"].append(

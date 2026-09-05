@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from foundry_spike_mcp import guards
@@ -36,6 +38,7 @@ def test_traversal_out_of_root_is_rejected(tmp_path):
     assert caught.value.reason == "target_outside_allow_list"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require admin privileges on Windows")
 def test_symlink_escaping_root_is_rejected(tmp_path):
     root = tmp_path / "allowed"
     outside = tmp_path / "outside"

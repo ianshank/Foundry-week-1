@@ -1,0 +1,7 @@
+WARN  G009  docs/decisions: ADR-0001 is declared in docs/decisions but cited by no living spec
+WARN  G009  docs/decisions: ADR-0002 is declared in docs/decisions but cited by no living spec
+WARN  G009  docs/decisions: ADR-0003 is declared in docs/decisions but cited by no living spec
+WARN  G009  docs/decisions: ADR-0027 is declared in docs/decisions but cited by no living spec
+
+7 spec(s) checked · 0 error · 4 warn · 0 info
+PASS

@@ -16,7 +16,7 @@ Full procedure: **[RUNBOOK.md](RUNBOOK.md)**.
 `planlint` exits 0, 1, or 2. Those mean three different things:
 
 | exit | verdict | means |
-|---|---|---|
+| --- | --- | --- |
 | 0 | `PASS` | ran, found nothing at or above the threshold |
 | 1 | `FINDINGS` | ran, found problems |
 | 2 | `BLOCKED` | **could not look** — a precondition or usage error |
@@ -41,7 +41,7 @@ set -a; source .env; set +a
 
 make setup      # venv + the MCP server + linters
 make hooks      # git pre-commit gate (secret scan, gitleaks, lint)
-make validate   # ruff, mypy, the suite, the secret pass -- run before any PR
+make validate   # ruff, mypy, 7-layer test suite, coverage gate, secret pass -- run before any PR
 make baseline   # session 1: version stamp, dialect card, baseline exit codes
 ```
 
@@ -53,7 +53,7 @@ Branches: `main` (base), `Dev`, `QA`, and feature branches off `main`.
 
 ## Layout
 
-```
+```text
 RUNBOOK.md                  the procedure, with the draft's defects marked [amended]
 NEXT_STEPS.md               what to do before session 1, and what is still open
 SECURITY.md                 threat model, per-surface controls, known limitations
@@ -71,12 +71,24 @@ mcp_server/                 the two read-only MCP tools, and their contract test
     logging_setup.py        stderr-only structured logging
     server.py               transport only; supports mcp 1.x and 2.x
 
-scripts/00-baseline.sh      step 0 evidence capture (records exit codes, never aborts on one)
-scripts/verifier_probe.py   headless backstop for the bake-off's verifier cell
-scripts/scan_evidence.py    the secret gate
-scripts/promote_trace.py    raw capture -> tracked evidence, only if it scans clean
+scripts/
+  00-baseline.sh            step 0 evidence capture (records exit codes, never aborts on one)
+  verifier_probe.py         headless facade for the bake-off verifier probe
+  probe/                    modular verifier probe package (cli, runner, screen, client, config)
+  scan_evidence.py          the secret gate
+  promote_trace.py          raw capture -> tracked evidence, only if it scans clean
 
-.claude/                    skills, a read-only review agent, a post-edit hook
+tests/                      enterprise 7-layer test suite (94% coverage)
+  unit/                     Layer 1: modular component unit tests
+  integration/              Layer 2: FastMCP tool dispatch and parameter flow
+  functional/               Layer 3: planlint exit code-to-verdict mapping
+  e2e/                      Layer 4: CLI subprocess executions
+  journey/                  Layer 5: complete developer evaluation workflow simulation
+  security/                 Layer 6: fuzzing path traversal, flag injections, secrets
+  sanity/                   Layer 7: environment health, typing, and entrypoint sanity
+
+.claude/                    skills (probe-evaluator, contract-guard, spike-validate), agents, hooks
+.agents/                    Antigravity / Gemini automation skills
 .githooks/pre-commit        secret scan + gitleaks + lint on staged Python
 Dockerfile                  reproducible regression env (NOT a way to run the server)
 

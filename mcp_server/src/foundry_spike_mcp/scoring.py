@@ -26,22 +26,47 @@ trap, and the one most likely to be papered over by a `or 0` somewhere.
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from typing import Any
 
-from . import guards
-from .config import ConfigError, EvalConfig, load_eval_config
-from .logging_setup import get_logger, log_result
-from .verdicts import (
-    BLOCKED,
-    BLOCKED_ARTIFACT_MISSING,
-    BLOCKED_ARTIFACT_SCHEMA,
-    BLOCKED_ARTIFACT_UNREADABLE,
-    BLOCKED_GUARD_REJECTED,
-    BLOCKED_NO_SCORED_RESULTS,
-    BLOCKED_NOTE,
-    FINDINGS,
-    PASS,
-)
+try:
+    from . import guards
+    from .config import ConfigError, EvalConfig, load_eval_config
+    from .logging_setup import get_logger, log_result
+    from .verdicts import (
+        BLOCKED,
+        BLOCKED_ARTIFACT_MISSING,
+        BLOCKED_ARTIFACT_SCHEMA,
+        BLOCKED_ARTIFACT_UNREADABLE,
+        BLOCKED_GUARD_REJECTED,
+        BLOCKED_NO_SCORED_RESULTS,
+        BLOCKED_NOTE,
+        FINDINGS,
+        PASS,
+    )
+except (ImportError, ValueError):
+    _src = str(Path(__file__).resolve().parents[1])
+    if _src not in sys.path:
+        sys.path.insert(0, _src)
+    from foundry_spike_mcp import guards
+    from foundry_spike_mcp.config import (
+        ConfigError,
+        EvalConfig,
+        load_eval_config,
+    )
+    from foundry_spike_mcp.logging_setup import get_logger, log_result
+    from foundry_spike_mcp.verdicts import (
+        BLOCKED,
+        BLOCKED_ARTIFACT_MISSING,
+        BLOCKED_ARTIFACT_SCHEMA,
+        BLOCKED_ARTIFACT_UNREADABLE,
+        BLOCKED_GUARD_REJECTED,
+        BLOCKED_NO_SCORED_RESULTS,
+        BLOCKED_NOTE,
+        FINDINGS,
+        PASS,
+    )
 
 #: Keys that may hold a scorer's name, in preference order.
 _NAME_KEYS = ("scorer", "scorer_name", "name", "scorer_id", "id")
@@ -141,76 +166,72 @@ def _normalise_passed(value: Any) -> bool | None | str:
 
 def _collect_scorers(
     node: Any,
-    path: str = "$",
-    label: str | None = None,
     out: list[dict[str, Any]] | None = None,
     ignored: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Walk the artifact for objects that carry a scorer verdict.
+    """Extract scorers explicitly from the pinned sink artifact shape.
 
-    Shape-agnostic on purpose: the exact `json_file` sink layout is pinned in
-    session 3 against a real artifact, and an adapter written from a guess
-    would silently mis-read a shape it half-matched. This finds any object with
-    a recognised verdict key and records where it was found, so a wrong guess
-    shows up as an odd `source_path` in the output rather than as a wrong
-    number.
-
-    Two rules keep tolerance from becoming invention:
-
-    * A verdict-carrying object must be *nameable* -- either an explicit name
-      key, or the key it hangs off (``$.scorers.exit_fidelity`` -> the scorer
-      ``exit_fidelity``). An object that is nameable by neither is a summary
-      field wearing a scorer's clothes.
-    * The document root is only a scorer when it names itself. Otherwise a
-      top-level verdict field would be counted alongside the real scorers,
-      which is how a null-only run turned into a pass.
-
-    Returns ``(scorers, ignored)``. Refusals are returned rather than dropped:
-    a scorer this wrapper declined to count is exactly the thing session 3
-    needs to see while pinning the real schema.
+    Session 3 pin: the artifact MUST be a dict with a 'results' key containing
+    a list of scorer objects. Each scorer object MUST have 'scorer' and 'passed'
+    keys. The shape-tolerant recursive walk has been removed.
     """
     if out is None:
         out = []
     if ignored is None:
         ignored = []
-    if isinstance(node, dict):
-        verdict_key = next((key for key in _PASSED_KEYS if key in node), None)
-        if verdict_key is not None:
-            explicit = next(
-                (str(node[key]) for key in _NAME_KEYS if key in node and node[key] is not None),
-                None,
-            )
-            name = explicit or label
-            if name is None:
-                ignored.append(
-                    {
-                        "source_path": path,
-                        "verdict_key": verdict_key,
-                        "why": (
-                            "an unnamed verdict field at the document root is a summary, "
-                            "not a scorer; counting it would fabricate a result"
-                        ),
-                    }
-                )
-            else:
-                out.append(
-                    {
-                        "scorer": name,
-                        "passed": _normalise_passed(node[verdict_key]),
-                        "source_path": path,
-                        "named_by": "field" if explicit else "path",
-                        "detail": node.get("reason") or node.get("message") or node.get("detail"),
-                    }
-                )
-        for key, value in node.items():
-            _collect_scorers(value, f"{path}.{key}", key, out, ignored)
-    elif isinstance(node, list):
-        for index, value in enumerate(node):
-            # A list element is always nameable by position, so a bare array of
-            # unnamed records still reports. The one thing that stays refused is
-            # an unnamed verdict field on the root object -- the actual defect.
-            child_label = f"{label}[{index}]" if label else f"[{index}]"
-            _collect_scorers(value, f"{path}[{index}]", child_label, out, ignored)
+
+    if not isinstance(node, dict) or "results" not in node:
+        ignored.append({
+            "source_path": "$",
+            "verdict_key": None,
+            "why": "artifact does not match the pinned schema (missing 'results' key at root)",
+        })
+        return out, ignored
+
+    results = node.get("results")
+    if not isinstance(results, list):
+        ignored.append({
+            "source_path": "$.results",
+            "verdict_key": None,
+            "why": "'results' is not a list",
+        })
+        return out, ignored
+
+    for index, item in enumerate(results):
+        source_path = f"$.results[{index}]"
+        if not isinstance(item, dict):
+            ignored.append({
+                "source_path": source_path,
+                "verdict_key": None,
+                "why": "scorer record is not an object",
+            })
+            continue
+
+        verdict_key = next((key for key in _PASSED_KEYS if key in item), None)
+        if verdict_key is None:
+            ignored.append({
+                "source_path": source_path,
+                "verdict_key": None,
+                "why": "scorer record missing 'passed' verdict key",
+            })
+            continue
+
+        name = next((str(item[key]) for key in _NAME_KEYS if key in item and item[key] is not None), None)
+        if name is None:
+            ignored.append({
+                "source_path": source_path,
+                "verdict_key": verdict_key,
+                "why": "scorer record missing 'scorer' name key",
+            })
+        else:
+            out.append({
+                "scorer": name,
+                "passed": _normalise_passed(item[verdict_key]),
+                "source_path": source_path,
+                "named_by": "field",
+                "detail": item.get("reason") or item.get("message") or item.get("detail"),
+            })
+
     return out, ignored
 
 
@@ -387,3 +408,13 @@ def score_run(
         result["contract"] = {**_contract(), "note": BLOCKED_NOTE}
     log_result(_log, "score_run", result)
     return result
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Score an eval-harness run artifact.")
+    parser.add_argument("run_id", help="The eval run ID to score")
+    parser.add_argument("--artifact-path", default=None, help="Explicit path to sink artifact JSON")
+    args = parser.parse_args()
+    print(json.dumps(score_run(args.run_id, artifact_path=args.artifact_path), indent=2), file=sys.stdout)

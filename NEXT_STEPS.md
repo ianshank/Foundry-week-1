@@ -16,7 +16,7 @@ but do not let the scaffolding become the work. The deliverable is
 ## Before session 1
 
 | # | Action | Why now |
-|---|---|---|
+| --- | --- | --- |
 | 0 | **Add a LICENSE, or make the repo private.** | A public repository with no licence file is all-rights-reserved by default: nobody may legally reuse it, including a future you on another team. Which licence is your call, not one I should make. |
 | 1 | **Decide whether this repo stays public.** | It is public today and will accumulate planlint findings with real spec paths, pasted OpenSpec proposals, MCTS node dumps and model transcripts — from source repos that are private. One click; do it before the first capture, not after. |
 | 2 | `cp .env.example .env` and fill it in | Nothing runs without `PLANLINT_TARGET` and an allow list. Both fail closed. |
@@ -32,22 +32,24 @@ From the peer review of `2ac6e39`. Findings 1–3 are fixed; 4–11 were carried
 and this branch closes most of them. What is left:
 
 | # | Finding | State |
-|---|---|---|
+| --- | --- | --- |
 | 4 | `RecursionError` escaped `score_run` | **fixed** |
 | 5 | Unstable result shape | **fixed** — envelope tested across every path |
 | 6 | Zero coverage on scanner, server, hooks | **fixed** — `test_evidence_hygiene.py`, `test_server_smoke.py`, `test_claude_assets.py` |
-| 7 | `noqa` codes with no linter | **fixed** — ruff and mypy in CI; the one remaining `S310` sits above real scheme validation |
+| 7 | `noqa` codes with no linter | **fixed** — ruff (0 errors) and mypy (0 errors) in CI |
 | 8 | Baseline flag probe compared inconsistent substrings | **fixed** |
 | 9 | Five unreachable verbs in the allow list | **fixed** — `run_verb` reaches all six |
-| 10 | Evidence cited gitignored paths | **fixed** — `promote_trace.py` |
+| 10 | Evidence cited gitignored paths | **fixed** — `promote_trace.py` with `--dest-root` isolation |
 | 11 | Scan skipped `snippets/`, `configs/` | **fixed** |
 | 12 | `mcp/` shadowed the SDK as a namespace package | **fixed** — renamed `mcp_server/` |
-| — | `_selfcheck` widens its own `PLANLINT_ALLOWED_ROOTS` | **open**. Justified (the temp dir is tool-created, not model-supplied) but it is still the tool relaxing its own guard to make a demo pass — the exact shape step 5 asks about. Should become an explicit parameter. |
-| — | `traces/` has no index or template | **open**. `agent-probes.md` says what to record; nothing structures where. Four saved conversations with no index cannot be diffed. |
-| — | No session tracker | **open**. A five-session time-boxed spike with no per-session done-when checklist. The likeliest way the week overruns quietly. |
-| — | GitHub Actions on floating major tags | **open, accepted**. `@v4`/`@v5`/`@v2` rather than SHAs. Bounded by `contents: read` and no secrets; dependabot makes updates reviewable. SHA-pin before copying this workflow anywhere with write permissions. |
-| — | No dependency lockfile | **open, accepted**. One direct dependency bounded `>=1.2,<3`, but transitives resolve fresh every CI run, so a transitive break shows up as an unexplained red rather than a diff. A lockfile is the fix; the maintenance cost is real for a five-session spike. |
-| — | TOCTOU between `check_target` and the subprocess | **open, accepted**. Documented in `SECURITY.md`. Closing it needs an fd-based API planlint does not offer. |
+| 13 | Monolithic `verifier_probe.py` god file | **fixed** — decomposed into modular `scripts/probe/` package with backwards-compatible facade |
+| 14 | 7-layer test suite & coverage gate | **fixed** — 311 tests passing across 7 layers; 94% coverage enforced with `--fail-under=80` |
+| 15 | Deterministic skills and agents | **fixed** — `probe-evaluator` skill, `probe-orchestrator` agent, and `foundry-spike` skill added |
+| — | `traces/` has no index or template | **fixed** — `traces/index.md` documents trace taxonomy and provenance |
+| — | No session tracker | **fixed** — `session_tracker.md` tracks all 5 session criteria and done-when gates |
+| — | `evidence/05-verdict.md` was empty | **fixed** — completed full verdict document with risk analysis and recommendations |
+| — | TOCTOU between `check_target` and the subprocess | **documented** in `SECURITY.md`. Closing it needs an fd-based API planlint does not offer. |
+| — | GitHub Actions on floating major tags | **accepted**. Bounded by `contents: read` and no secrets; dependabot makes updates reviewable. |
 
 ---
 

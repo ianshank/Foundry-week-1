@@ -269,7 +269,11 @@ def run_verb(
     return result
 
 
-def lint_openspec(target: str | None = None, fail_on: str = "ERROR") -> dict[str, Any]:
+def lint_openspec(
+    target: str | None = None,
+    fail_on: str = "ERROR",
+    config: PlanlintConfig | None = None,
+) -> dict[str, Any]:
     """Run `planlint validate` read-only and report its exit code as a verdict.
 
     Never calls `init`, `new`, `witness`, or `make`. Never passes `--force`.
@@ -280,6 +284,7 @@ def lint_openspec(target: str | None = None, fail_on: str = "ERROR") -> dict[str
         target: Absolute path to the repository to lint. Defaults to
             ``$PLANLINT_TARGET``. Must resolve inside ``$PLANLINT_ALLOWED_ROOTS``.
         fail_on: Severity threshold, e.g. ``ERROR``.
+        config: Optional configuration override.
 
     Returns:
         A dict that always contains ``verdict`` (PASS / FINDINGS / BLOCKED),
@@ -287,7 +292,7 @@ def lint_openspec(target: str | None = None, fail_on: str = "ERROR") -> dict[str
         BLOCKED results also carry ``blocked_reason``. Never raises.
     """
     try:
-        config = load_planlint_config()
+        config = config or load_planlint_config()
     except ConfigError as error:
         return _blocked(BLOCKED_CONFIG_ERROR, str(error), 500, verb="validate")
 
