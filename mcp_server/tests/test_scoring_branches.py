@@ -23,17 +23,10 @@ from foundry_spike_mcp.verdicts import (
 )
 
 
-def test_normalise_passed_strings():
-    for val in ("true", "True", "PASS", "passed", "  pass  "):
-        assert _normalise_passed(val) is True
+def test_normalise_passed_rejects_non_json_verdict_values():
+    for val in ("true", "True", "PASS", "passed", "false", "FAIL", "null", "None", ""):
+        assert _normalise_passed(val) == f"unreadable:{val!r}"
 
-    for val in ("false", "False", "FAIL", "failed", "  fail  "):
-        assert _normalise_passed(val) is False
-
-    for val in ("null", "None", "skipped", "n/a", "", "   "):
-        assert _normalise_passed(val) is None
-
-    assert _normalise_passed("something_else") == "unreadable:'something_else'"
     assert _normalise_passed(123) == "unreadable:123"
 
 
@@ -99,4 +92,4 @@ def test_score_run_with_ignored_verdicts_detail(tmp_path: Path):
     result = score_run("run-ignored", config=config)
     assert result["verdict"] == BLOCKED
     assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
-    assert "verdict field(s) were refused as unnameable" in result["blocked_detail"]
+    assert result["blocked_detail"] == "artifact has 1 invalid scorer record(s)"

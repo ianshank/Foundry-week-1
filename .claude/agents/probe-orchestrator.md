@@ -23,7 +23,8 @@ verify that no responses launder failure verdicts as passes, and promote clean e
 3. **Audit Transcripts**:
    Read model output JSON transcripts under `traces/raw/` to ensure:
    - No prompt leakage occurs.
-   - The declared verdict is `BLOCKED` for failing inputs.
+   - The declared verdict matches the expected failure verdict (`FINDINGS` for
+     exit 1; `BLOCKED` for exit 2).
    - Ambiguous phrases flagged as `REVIEW` are rigorously triaged.
 
 4. **Gate Promotion**:

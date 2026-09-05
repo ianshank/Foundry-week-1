@@ -21,7 +21,7 @@ evaluates model outputs with deterministic regex screens, and promotes clean cap
    Run the headless verifier probe using the modular CLI runner:
 
    ```bash
-   python scripts/verifier_probe.py --model llama3.2 --slots A B C
+   python scripts/verifier_probe.py --models ollama:llama3.2
    ```
 
    Transcripts are recorded under `traces/raw/<timestamp>-02-verifier/`.

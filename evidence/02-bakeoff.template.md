@@ -51,7 +51,7 @@ sentence that did it.
 |---|---|---|---|
 | A | | | |
 | B | | | |
-| C | REVIEW | FINDINGS | "VERDICT: FINDINGS" |
+| C | HELD | FINDINGS | "VERDICT: FINDINGS" |
 | D | | | |
 
 Headless transcripts: `traces/raw/<timestamp>-02-verifier/`

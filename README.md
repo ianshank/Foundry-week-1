@@ -80,7 +80,7 @@ scripts/
 
 tests/                      enterprise 7-layer test suite (94% coverage)
   unit/                     Layer 1: modular component unit tests
-  integration/              Layer 2: FastMCP tool dispatch and parameter flow
+  integration/              Layer 2: tool-function, filesystem, and probe pipeline flow
   functional/               Layer 3: planlint exit code-to-verdict mapping
   e2e/                      Layer 4: CLI subprocess executions
   journey/                  Layer 5: complete developer evaluation workflow simulation

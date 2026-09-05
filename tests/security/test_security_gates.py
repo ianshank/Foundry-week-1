@@ -100,7 +100,7 @@ def test_security_denied_flags_in_argv(flag: str):
 def test_security_secret_redaction(raw_secret: str, expected_tag: str):
     redacted = redact(raw_secret)
     assert expected_tag in redacted
-    assert raw_secret not in redacted or "[REDACTED" in redacted
+    assert raw_secret not in redacted
 
 
 def test_security_gitleaks_toml_validity():

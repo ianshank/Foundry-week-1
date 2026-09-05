@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,10 +16,10 @@ for _p in (_REPO_ROOT, _REPO_ROOT / "scripts", _REPO_ROOT / "mcp_server" / "src"
 
 import pytest  # noqa: E402
 
-from foundry_spike_mcp.config import EvalConfig  # noqa: E402
+from foundry_spike_mcp.config import EvalConfig, PlanlintConfig  # noqa: E402
 from foundry_spike_mcp.planlint import lint_openspec  # noqa: E402
 from foundry_spike_mcp.scoring import score_run  # noqa: E402
-from foundry_spike_mcp.verdicts import BLOCKED, FINDINGS, PASS  # noqa: E402
+from foundry_spike_mcp.verdicts import FINDINGS, PASS  # noqa: E402
 
 try:
     from scripts import verifier_probe  # noqa: E402
@@ -32,7 +33,9 @@ except ImportError:
 
 
 
-def test_integration_planlint_and_scoring_pipeline(tmp_path: Path) -> None:
+def test_integration_planlint_and_scoring_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Simulate complete pipeline: lint proposals, produce runs, and score them."""
     # 1. Prepare an openspec repository tree
     repo_tree = tmp_path / "repo"
@@ -41,9 +44,21 @@ def test_integration_planlint_and_scoring_pipeline(tmp_path: Path) -> None:
     proposal = openspec_dir / "proposal.md"
     proposal.write_text("# Feature Proposal\n\nValid description.", encoding="utf-8")
 
-    # 2. Run lint_openspec against this tree (target exists, openspec exists)
-    result = lint_openspec(target=str(proposal))
-    assert result["verdict"] in (PASS, FINDINGS, BLOCKED)
+    # 2. Run lint_openspec with a deterministic tool configuration.
+    def completed_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 0, stdout='{"findings": []}', stderr="")
+
+    monkeypatch.setattr(
+        "foundry_spike_mcp.planlint.subprocess.run",
+        completed_run,
+    )
+    planlint_cfg = PlanlintConfig(
+        binary=sys.executable,
+        target=str(proposal),
+        allowed_roots=(repo_tree,),
+    )
+    result = lint_openspec(target=str(proposal), config=planlint_cfg)
+    assert result["verdict"] == PASS
 
     # 3. Create a valid eval sink artifact and score it
     sink_file = repo_tree / "run-01.json"
@@ -119,4 +134,3 @@ def test_integration_verifier_probe_client_and_screen(monkeypatch: Any) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
-

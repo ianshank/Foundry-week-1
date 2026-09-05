@@ -153,14 +153,6 @@ def _normalise_passed(value: Any) -> bool | None | str:
         return None
     if isinstance(value, bool):
         return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "pass", "passed"}:
-            return True
-        if lowered in {"false", "fail", "failed"}:
-            return False
-        if lowered in {"null", "none", "skipped", "n/a", ""}:
-            return None
     return f"unreadable:{value!r}"
 
 
@@ -224,9 +216,17 @@ def _collect_scorers(
                 "why": "scorer record missing 'scorer' name key",
             })
         else:
+            passed = _normalise_passed(item[verdict_key])
+            if isinstance(passed, str):
+                ignored.append({
+                    "source_path": source_path,
+                    "verdict_key": verdict_key,
+                    "why": "scorer record has a non-boolean, non-null verdict",
+                })
+                continue
             out.append({
                 "scorer": name,
-                "passed": _normalise_passed(item[verdict_key]),
+                "passed": passed,
                 "source_path": source_path,
                 "named_by": "field",
                 "detail": item.get("reason") or item.get("message") or item.get("detail"),
@@ -360,6 +360,15 @@ def score_run(
             "artifact nests deeper than the walk can follow",
             run_id=run_id,
             artifact=str(resolved),
+        )
+    if ignored:
+        return _blocked(
+            BLOCKED_ARTIFACT_SCHEMA,
+            f"artifact has {len(ignored)} invalid scorer record(s)",
+            run_id=run_id,
+            artifact=str(resolved),
+            scorers=scorers,
+            ignored=ignored,
         )
     if not scorers:
         detail = (

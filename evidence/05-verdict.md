@@ -1,6 +1,6 @@
 # Step 5 — Week 1 verdict
 
-**Toolkit extension version:** ms-windows-ai-studio.windows-ai-studio@x.y.z
+**Toolkit extension version:** ms-windows-ai-studio.windows-ai-studio@1.6.11
 **Date:** 2026-09-05
 **Sessions used:** 5
 **Azure spend:** $0

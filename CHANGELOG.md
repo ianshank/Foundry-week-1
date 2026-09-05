@@ -14,7 +14,7 @@ to lose by accident.
 - **Modular Decomposition of `scripts/verifier_probe.py`**: Decomposed 490-line monolithic script into `scripts/probe/` package (`config.py`, `screen.py`, `client.py`, `runner.py`, `cli.py`), retaining a 100% backwards-compatible facade with decoupled `post_fn` injection for testability.
 - **Enterprise 7-Layer Test Suite (94% branch coverage)**:
   1. *Unit*: Modular probe tests (`tests/unit/test_probe_modular.py`) and scoring branch coverage (`mcp_server/tests/test_scoring_branches.py`).
-  2. *Integration*: Real FastMCP tool dispatch and parameter flow (`tests/integration/test_mcp_integration.py`).
+  2. *Integration*: Direct tool-function, filesystem, and probe pipeline flow (`tests/integration/test_mcp_integration.py`).
   3. *Functional*: Deterministic planlint exit code-to-verdict mapping (`tests/functional/test_planlint_functional.py`).
   4. *End-to-End*: Subprocess CLI execution for `scan_evidence.py`, `promote_trace.py`, and `verifier_probe.py` (`tests/e2e/test_e2e_workflow.py`).
   5. *User Journey*: Complete developer evaluation lifecycle from OpenSpec authoring to trace promotion (`tests/journey/test_engineer_workflow.py`).

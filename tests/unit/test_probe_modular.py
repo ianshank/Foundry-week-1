@@ -92,7 +92,7 @@ def test_validate_endpoint():
         _validate_endpoint("http://")
 
 
-def test_call_model_error_cases():
+def test_call_model_error_cases(monkeypatch: pytest.MonkeyPatch):
     res1 = call_model("invalid_slot", "sys", "user")
     assert res1["status"] == ERROR
     assert "has no model id" in res1["error"]
@@ -101,6 +101,7 @@ def test_call_model_error_cases():
     assert res2["status"] == ERROR
     assert "unknown provider" in res2["error"]
 
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     res3 = call_model("github:model1", "sys", "user")
     # GitHub requires GITHUB_TOKEN
     assert res3["status"] == ERROR
@@ -123,6 +124,18 @@ def test_call_model_custom_post_injection():
     assert res["text"] == "VERDICT: FINDINGS"
     assert res["total_tokens"] == 12
     assert "test-model" in seen["payload"]["model"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"choices": [{"message": {"content": "VERDICT: FINDINGS"}}], "usage": "unknown"},
+        {"choices": [{"message": {"content": 42}}], "usage": {}},
+    ],
+)
+def test_call_model_rejects_invalid_response_fields(response):
+    res = call_model("ollama:test-model", "sys", "user", post_fn=lambda *_args: response)
+    assert res["status"] == ERROR
 
 
 # ---------------------------------------------------------------- runner tests
@@ -223,4 +236,3 @@ def test_verifier_probe_facade_helpers(monkeypatch):
     res_call = verifier_probe.call_model("ollama:test", "sys", "user")
     assert res_call["called"] is True
     assert res_call["post_fn"] is not None
-

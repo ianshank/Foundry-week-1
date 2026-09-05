@@ -109,8 +109,14 @@ def call_model(
         text = body["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError):
         return {"status": ERROR, "error": "no choices[0].message.content in response", "raw": body}
+    if not isinstance(text, str):
+        return {"status": ERROR, "error": "choices[0].message.content is not text", "raw": body}
 
-    usage = body.get("usage") or {}
+    usage = body.get("usage")
+    if usage is None:
+        usage = {}
+    if not isinstance(usage, dict):
+        return {"status": ERROR, "error": "usage is not an object", "raw": body}
     return {
         "status": "OK",
         "text": text,

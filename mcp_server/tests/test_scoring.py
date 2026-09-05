@@ -140,11 +140,9 @@ def test_unset_sink_is_blocked_not_a_keyerror(monkeypatch):
 def test_unreadable_verdict_value_is_not_guessed_into_a_boolean(sink):
     sink("run-10", {"results": [{"scorer": "weird", "passed": 0.73}]})
     result = score_run("run-10")
-    passed = result["scorers"][0]["passed"]
-    assert passed is not True and passed is not False and passed is not None
-    assert str(passed).startswith("unreadable:")
-    assert result["counts"]["unreadable"] == 1
-    assert result["pass_rate"] is None
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
+    assert result["ignored"][0]["why"] == "scorer record has a non-boolean, non-null verdict"
 
 
 # --------------------------------------------------------------------------
@@ -165,6 +163,16 @@ def test_unnamed_scorer_record_is_refused(sink):
     assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
     assert len(result["ignored"]) == 1
     assert result["ignored"][0]["why"] == "scorer record missing 'scorer' name key"
+
+
+def test_malformed_result_blocks_even_when_another_result_passes(sink):
+    sink(
+        "run-22",
+        {"results": [{"scorer": "valid", "passed": True}, {"scorer": "invalid"}]},
+    )
+    result = score_run("run-22")
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
 
 
 def test_null_never_appears_as_false_anywhere_in_the_payload(sink):

@@ -81,7 +81,7 @@ regression: ## The suite with the SDK required -- what CI's transport job runs
 	REQUIRE_MCP=1 $(PYTEST)
 
 coverage: ## Run the suite under coverage and enforce the 80% floor
-	$(PY) -m coverage run -m pytest -q
+	$(PY) -m coverage run --branch --source=mcp_server/src,scripts -m pytest -q
 	$(PY) -m coverage report --fail-under=80
 
 scan: ## Credential pass over evidence/ traces/ snippets/ configs/ decisions/
