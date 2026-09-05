@@ -287,7 +287,9 @@ def score_run(
         candidate = str(config.sink_dir / f"{run_id}.json")
 
     try:
-        resolved = guards.check_target(candidate, config.allowed_roots)
+        resolved = guards.check_target(
+            candidate, config.allowed_roots, "EVAL_ALLOWED_ROOTS (or EVAL_SINK_DIR)"
+        )
     except guards.GuardRejection as rejection:
         return _blocked(BLOCKED_GUARD_REJECTED, str(rejection), run_id=run_id)
 

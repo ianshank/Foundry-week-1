@@ -32,6 +32,7 @@ Two structural properties worth stating, because both were review findings:
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import subprocess
 import time
@@ -171,7 +172,9 @@ def run_verb(
         )
 
     try:
-        resolved = guards.check_target(raw_target, config.allowed_roots)
+        resolved = guards.check_target(
+            raw_target, config.allowed_roots, "PLANLINT_ALLOWED_ROOTS (or PLANLINT_TARGET)"
+        )
     except guards.GuardRejection as rejection:
         return _blocked(
             BLOCKED_GUARD_REJECTED, str(rejection), limit, verb=safe_verb, target=raw_target
@@ -179,7 +182,14 @@ def run_verb(
 
     argv = [config.binary, "--target", str(resolved), safe_verb, *extra_args]
     if config.json_flag:
-        argv.append(config.json_flag)
+        # `shlex.split`, not `append`. The flag is whatever spelling session 1
+        # found in `validate --help`, and `--format json` is two argv tokens.
+        # Appending it whole passed the single token "--format json", which
+        # planlint rejects -- exit 2, BLOCKED, for a configuration reason that
+        # looks exactly like a precondition error. `00-baseline.sh` reports
+        # `--format` as a candidate, so this repo was routing operators into
+        # that trap by its own instructions.
+        argv.extend(shlex.split(config.json_flag))
 
     try:
         guards.assert_safe_argv(argv)

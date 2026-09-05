@@ -90,8 +90,17 @@ class GuardRejection(Exception):
         self.detail = detail
 
 
-def check_target(target: str, roots: tuple[Path, ...] | list[Path]) -> Path:
+def check_target(
+    target: str,
+    roots: tuple[Path, ...] | list[Path],
+    setting_hint: str = "the allow-list environment variable",
+) -> Path:
     """Resolve ``target`` and prove it sits inside the allow list.
+
+    ``setting_hint`` names the variables *this caller* reads. The function is
+    shared by `lint_openspec` and `score_run`, which read different ones, and a
+    rejection that tells an operator to set the wrong variable is worse than a
+    generic one -- it sends them to fix something that was never the problem.
 
     Resolution happens before the containment test so that ``..`` traversal
     and symlinks out of an allowed root are both caught. The path is not
@@ -100,10 +109,7 @@ def check_target(target: str, roots: tuple[Path, ...] | list[Path]) -> Path:
     guard violation.
     """
     if not roots:
-        raise GuardRejection(
-            "no_allowed_roots",
-            "set PLANLINT_ALLOWED_ROOTS (or PLANLINT_TARGET) to an absolute path",
-        )
+        raise GuardRejection("no_allowed_roots", f"set {setting_hint} to an absolute path")
     if not target or not target.strip():
         raise GuardRejection("empty_target")
     candidate = Path(target).expanduser()

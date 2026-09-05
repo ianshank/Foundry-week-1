@@ -58,10 +58,32 @@ VERDICT_LINE = re.compile(r"^\s*VERDICT:\s*([A-Z_]+)\s*$", re.MULTILINE)
 # them configuration that has to be recorded, not constants buried in a call.
 # Defaults match `configs/probes/system-prompt.md`; every run writes the values
 # it actually used into summary.json, so a matrix cell can be re-derived.
-DEFAULT_TEMPERATURE = float(os.environ.get("PROBE_TEMPERATURE", "0"))
-DEFAULT_TOP_P = float(os.environ.get("PROBE_TOP_P", "1"))
-DEFAULT_MAX_TOKENS = int(os.environ.get("PROBE_MAX_TOKENS", "800"))
-DEFAULT_TIMEOUT = int(os.environ.get("PROBE_TIMEOUT", "180"))
+#
+# Literals, read from the environment inside `main()` rather than here. An
+# earlier revision did `float(os.environ.get("PROBE_TOP_P", "1"))` at module
+# scope, so `PROBE_TOP_P=abc` crashed the script with a traceback *before*
+# argument parsing -- and worse, before `--help`. That directly contradicted
+# this repo's own stance in `config.py`: absent falls back to a documented
+# default, malformed is an actionable failure, and neither is a stack trace.
+DEFAULT_TEMPERATURE = 0.0
+DEFAULT_TOP_P = 1.0
+DEFAULT_MAX_TOKENS = 800
+DEFAULT_TIMEOUT = 180
+
+
+class ProbeConfigError(ValueError):
+    """A PROBE_* variable was set to something unusable."""
+
+
+def _env_number(name: str, default: float, cast: Any) -> Any:
+    """Read one numeric setting. Absent -> default; malformed -> raise."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return cast(raw)
+    except ValueError as error:
+        raise ProbeConfigError(f"{name}={raw!r} is not a valid {cast.__name__}") from error
 
 @dataclass(frozen=True)
 class Provider:
@@ -197,7 +219,11 @@ def _post(url: str, payload: dict[str, Any], headers: dict[str, str], timeout: i
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-        return json.loads(response.read().decode("utf-8"))
+        # errors="replace": a provider returning a non-UTF-8 body would
+        # otherwise raise UnicodeDecodeError, which is a ValueError and not
+        # caught below -- breaking `call_model`'s "never raises" promise over
+        # something that is only ever a garbled error page.
+        return json.loads(response.read().decode("utf-8", errors="replace"))
 
 
 def call_model(
@@ -251,8 +277,14 @@ def call_model(
         return {"status": ERROR, "error": f"refused endpoint: {error}"}
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         return {"status": ERROR, "error": f"{type(error).__name__}: {error}"}
-    except json.JSONDecodeError as error:
-        return {"status": ERROR, "error": f"response was not JSON: {error}"}
+    except (json.JSONDecodeError, RecursionError) as error:
+        # RecursionError comes from `json.loads` on deeply nested input and is
+        # not a JSONDecodeError. Caught in the MCP tools already; missing here
+        # was the same oversight in a second place.
+        return {
+            "status": ERROR,
+            "error": f"response was not usable JSON: {type(error).__name__}: {error}",
+        }
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     try:
@@ -353,11 +385,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--system", type=Path, default=PROBES / "system-prompt.md")
     parser.add_argument("--expect", default="FINDINGS", choices=["PASS", "FINDINGS", "BLOCKED", "NOT_APPLICABLE"])
     parser.add_argument("--out", type=Path, default=REPO / "traces" / "raw")
-    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
-    parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
-    parser.add_argument("--top-p", dest="top_p", type=float, default=DEFAULT_TOP_P)
-    parser.add_argument("--max-tokens", dest="max_tokens", type=int, default=DEFAULT_MAX_TOKENS)
+    # Defaults stay None here and are filled from the environment *after*
+    # parsing. Reading the environment first meant a malformed PROBE_* value
+    # aborted before argparse had registered these options -- so `--help` died
+    # too, and its usage line was missing half the flags. Register everything,
+    # let argparse own `--help`, then resolve.
+    parser.add_argument("--timeout", type=int, default=None)
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--top-p", dest="top_p", type=float, default=None)
+    parser.add_argument("--max-tokens", dest="max_tokens", type=int, default=None)
     args = parser.parse_args(argv)
+
+    # An explicit flag always wins; the environment fills the rest. Malformed
+    # is a one-line argparse error, never a traceback -- the same stance
+    # `config.py` takes for the MCP tools.
+    try:
+        if args.timeout is None:
+            args.timeout = _env_number("PROBE_TIMEOUT", DEFAULT_TIMEOUT, int)
+        if args.temperature is None:
+            args.temperature = _env_number("PROBE_TEMPERATURE", DEFAULT_TEMPERATURE, float)
+        if args.top_p is None:
+            args.top_p = _env_number("PROBE_TOP_P", DEFAULT_TOP_P, float)
+        if args.max_tokens is None:
+            args.max_tokens = _env_number("PROBE_MAX_TOKENS", DEFAULT_MAX_TOKENS, int)
+    except ProbeConfigError as error:
+        parser.error(str(error))
 
     slots = [slot.strip() for slot in args.models.split(",") if slot.strip()]
     if not slots:

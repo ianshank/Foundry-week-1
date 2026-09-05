@@ -153,3 +153,22 @@ def test_clean_redacts_before_truncating(monkeypatch):
     text = "ghp_abcdefghijklmnopqrstuvwxyz012345" + "z" * 100
     out = guards.clean(text, 40)
     assert "ghp_abcdefghijklmnop" not in out
+
+
+def test_the_allow_list_rejection_names_the_caller_s_own_variable():
+    """Copilot review, PR #1. `check_target` is shared by `lint_openspec` and
+    `score_run`, which read different variables. A rejection telling an
+    operator to set the wrong one is worse than a generic message -- it sends
+    them to fix something that was never the problem."""
+    with pytest.raises(guards.GuardRejection) as caught:
+        guards.check_target("/x", (), "EVAL_ALLOWED_ROOTS (or EVAL_SINK_DIR)")
+    assert "EVAL_ALLOWED_ROOTS" in caught.value.detail
+    assert "PLANLINT" not in caught.value.detail
+
+
+def test_each_tool_passes_its_own_hint(tmp_path):
+    from foundry_spike_mcp.planlint import lint_openspec
+    from foundry_spike_mcp.scoring import score_run
+
+    assert "PLANLINT_ALLOWED_ROOTS" in str(lint_openspec(target=str(tmp_path))["blocked_detail"])
+    assert "EVAL_ALLOWED_ROOTS" in str(score_run("r")["blocked_detail"])

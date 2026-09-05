@@ -212,3 +212,41 @@ def test_deeply_nested_stdout_does_not_raise(fake_planlint, configured):
     assert result["verdict"] == FINDINGS
     assert result["findings"] is None
     assert "RecursionError" in result["findings_parse_error"]
+
+
+# --------------------------------------------------------------------------
+# Copilot review, PR #1. The JSON flag is whatever spelling session 1 finds in
+# `validate --help`, and `00-baseline.sh` reports `--format` as a candidate.
+# Appending it whole passed a single argv token "--format json", which planlint
+# rejects -- exit 2, BLOCKED, for a *configuration* reason indistinguishable
+# from a real precondition error. Two of this repo's own files pointed the
+# operator into that trap.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("spelling", "expected_tail"),
+    [
+        ("--json", ["--json"]),
+        ("--format json", ["--format", "json"]),
+        ("--format=json", ["--format=json"]),
+        ("--output json", ["--output", "json"]),
+        ("  --json  ", ["--json"]),
+    ],
+)
+def test_multi_token_json_flag_becomes_separate_argv_entries(
+    fake_planlint, configured, spelling, expected_tail
+):
+    configured(fake_planlint(exit_code=0, stdout="{}"), PLANLINT_JSON_FLAG=spelling)
+    command = lint_openspec()["command"]
+    assert command[-len(expected_tail):] == expected_tail
+    assert not any(" " in token for token in command[3:]), f"unsplit token in {command}"
+
+
+def test_a_multi_token_flag_does_not_confuse_the_verb_check(fake_planlint, configured):
+    """`--format json` puts a bare token in argv. The verb scan must still find
+    `validate`, not treat `json` as the verb and refuse the call."""
+    configured(fake_planlint(exit_code=1, stdout="{}"), PLANLINT_JSON_FLAG="--format json")
+    result = lint_openspec()
+    assert result["verdict"] == FINDINGS
+    assert result["blocked_reason"] is None
