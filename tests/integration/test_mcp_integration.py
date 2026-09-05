@@ -3,17 +3,33 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
-import pytest
+# Ensure repository root, scripts, and mcp_server/src are on sys.path for IDEs and standalone execution
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+for _p in (_REPO_ROOT, _REPO_ROOT / "scripts", _REPO_ROOT / "mcp_server" / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
-import verifier_probe
-from foundry_spike_mcp.planlint import lint_openspec
-from foundry_spike_mcp.scoring import score_run
-from foundry_spike_mcp.verdicts import BLOCKED, FINDINGS, PASS
-from promote_trace import promote
-from scan_evidence import scan_file
+import pytest  # noqa: E402
+
+from foundry_spike_mcp.config import EvalConfig  # noqa: E402
+from foundry_spike_mcp.planlint import lint_openspec  # noqa: E402
+from foundry_spike_mcp.scoring import score_run  # noqa: E402
+from foundry_spike_mcp.verdicts import BLOCKED, FINDINGS, PASS  # noqa: E402
+
+try:
+    from scripts import verifier_probe  # noqa: E402
+    from scripts.promote_trace import promote  # noqa: E402
+    from scripts.scan_evidence import scan_file  # noqa: E402
+except ImportError:
+    import verifier_probe  # type: ignore[no-redef]  # noqa: E402
+    from promote_trace import promote  # type: ignore[no-redef]  # noqa: E402
+    from scan_evidence import scan_file  # type: ignore[no-redef]  # noqa: E402
+
+
 
 
 def test_integration_planlint_and_scoring_pipeline(tmp_path: Path) -> None:
@@ -30,7 +46,6 @@ def test_integration_planlint_and_scoring_pipeline(tmp_path: Path) -> None:
     assert result["verdict"] in (PASS, FINDINGS, BLOCKED)
 
     # 3. Create a valid eval sink artifact and score it
-    from foundry_spike_mcp.config import EvalConfig
     sink_file = repo_tree / "run-01.json"
     sink_file.write_text(
         json.dumps({
@@ -100,3 +115,8 @@ def test_integration_verifier_probe_client_and_screen(monkeypatch: Any) -> None:
     screen_res = verifier_probe.screen(row["text"], expected="FINDINGS")
     assert screen_res["screen"] == verifier_probe.HELD
     assert screen_res["basis"] == "declared_verdict_line"
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))
+
