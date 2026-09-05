@@ -10,6 +10,7 @@ Validates:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -60,7 +61,7 @@ def test_e2e_promote_trace_cli(tmp_path: Path):
         text=True,
         check=False,
         cwd=str(REPO_ROOT),
-        env={"PYTHONPATH": str(REPO_ROOT), "PATH": ""},
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
     )
     assert result.returncode == 0
     assert (dst_dir / "run-e2e-100" / "trace.json").exists()
@@ -82,13 +83,14 @@ def test_e2e_verifier_probe_cli_help():
 
 def test_e2e_mcp_server_module_help():
     """Verify the foundry_spike_mcp module entrypoint help invocation."""
+    pythonpath = os.pathsep.join([str(REPO_ROOT / "mcp_server" / "src"), str(REPO_ROOT)])
     result = subprocess.run(
         [sys.executable, "-m", "foundry_spike_mcp", "--help"],
         capture_output=True,
         text=True,
         check=False,
         cwd=str(REPO_ROOT),
-        env={"PYTHONPATH": f"{REPO_ROOT / 'mcp_server' / 'src'};{REPO_ROOT}"},
+        env={**os.environ, "PYTHONPATH": pythonpath},
     )
     assert result.returncode == 0
     assert "foundry-spike-mcp" in result.stdout.lower() or "usage:" in result.stdout.lower()

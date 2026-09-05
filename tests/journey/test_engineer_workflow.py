@@ -12,6 +12,7 @@ User Journey stages:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -53,8 +54,16 @@ Defines safety barriers for tool execution.
     # Configure mock planlint binary
     bin_dir = workspace / "bin"
     bin_dir.mkdir()
-    planlint_bin = bin_dir / "mock_planlint.bat"
-    planlint_bin.write_text("@echo off\necho {\"findings\": []}\nexit /b 0\n")
+    py_script = bin_dir / "planlint_mock.py"
+    py_script.write_text('import json; print(json.dumps({"findings": []}))\n', encoding="utf-8")
+    if sys.platform == "win32":
+        planlint_bin = bin_dir / "mock_planlint.bat"
+        planlint_bin.write_text(f'@"{sys.executable}" "{py_script}" %*')
+    else:
+        import stat
+        planlint_bin = bin_dir / "mock_planlint"
+        planlint_bin.write_text(f"#!{sys.executable}\nimport json; print(json.dumps({{'findings': []}}))\n", encoding="utf-8")
+        planlint_bin.chmod(planlint_bin.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     planlint_cfg = PlanlintConfig(
         binary=str(planlint_bin),

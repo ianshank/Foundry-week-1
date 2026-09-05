@@ -8,12 +8,12 @@ from typing import Any
 
 import pytest
 
+import verifier_probe
 from foundry_spike_mcp.planlint import lint_openspec
 from foundry_spike_mcp.scoring import score_run
 from foundry_spike_mcp.verdicts import BLOCKED, FINDINGS, PASS
 from promote_trace import promote
 from scan_evidence import scan_file
-import verifier_probe
 
 
 def test_integration_planlint_and_scoring_pipeline(tmp_path: Path) -> None:
@@ -42,7 +42,7 @@ def test_integration_planlint_and_scoring_pipeline(tmp_path: Path) -> None:
         }),
         encoding="utf-8",
     )
-    eval_cfg = EvalConfig(sink_dir=repo_tree, allowed_roots=[repo_tree])
+    eval_cfg = EvalConfig(sink_dir=repo_tree, allowed_roots=(repo_tree,))
     score_envelope = score_run(run_id="run-01", artifact_path=str(sink_file), config=eval_cfg)
     assert score_envelope["verdict"] == FINDINGS
     assert score_envelope["counts"]["true"] == 2

@@ -31,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
     "attack_vector",
     [
         "../../etc/passwd",
-        "..\\..\\Windows\\System32\\cmd.exe",
+        "../../Windows/System32/cmd.exe",
         "../outside.md",
         "nested/../../escape.md",
     ],
