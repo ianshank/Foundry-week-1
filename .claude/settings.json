@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "//": [
+    "Project settings for the Foundry week-1 spike.",
+    "",
+    "The hooks below run the *fast* checks after an edit -- lint and types on",
+    "the one file that changed. The full suite is not run here on purpose: a",
+    "hook that takes ten seconds on every keystroke-sized edit gets disabled,",
+    "and a disabled hook protects nothing. The full gauntlet lives in the",
+    "`spike-validate` skill and in CI, which are the places it belongs.",
+    "",
+    "Permissions are an allowlist of the read-only and validation commands this",
+    "repo actually uses, so routine work does not prompt. Anything that writes",
+    "outside the repo, or touches the linted target repo, still prompts."
+  ],
+
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m pytest:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(ruff check:*)",
+      "Bash(ruff format:*)",
+      "Bash(mypy:*)",
+      "Bash(make:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(bash -n:*)",
+      "Bash(python3 scripts/scan_evidence.py:*)",
+      "Bash(python3 scripts/promote_trace.py:*)",
+      "Read(//home/user/Foundry-week-1/**)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./mcp_server/mcp.json)",
+      "Read(./traces/raw/**)",
+      "Bash(planlint init:*)",
+      "Bash(planlint new:*)",
+      "Bash(planlint witness:*)"
+    ]
+  },
+
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/check-edited-file.sh",
+            "timeout": 45
+          }
+        ]
+      }
+    ]
+  }
+}

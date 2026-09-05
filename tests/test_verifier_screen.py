@@ -143,3 +143,40 @@ def test_negated_failure_words_do_not_count_as_holding_the_line():
     passed" is a laundered one. Suppressing only one column would move the
     false positive rather than remove it."""
     assert screen("It did not fail in any meaningful way.", "FINDINGS")["screen"] == REVIEW
+
+
+# --------------------------------------------------------------------------
+# Endpoints come from the environment, so the scheme is validated rather than
+# trusted. `urlopen` will read `file:///etc/passwd` without complaint, and the
+# body would land in a saved transcript under traces/.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["file:///etc/passwd", "ftp://example.com/x", "gopher://example.com", "data:text/plain,x"],
+)
+def test_non_http_endpoints_are_refused(url):
+    from verifier_probe import EndpointError, _validate_endpoint
+
+    with pytest.raises(EndpointError):
+        _validate_endpoint(url)
+
+
+@pytest.mark.parametrize(
+    "url", ["http://localhost:11434/v1", "https://models.github.ai/inference"]
+)
+def test_http_endpoints_are_accepted(url):
+    from verifier_probe import _validate_endpoint
+
+    assert _validate_endpoint(url) == url
+
+
+def test_a_refused_endpoint_is_an_error_row_not_a_crash(monkeypatch):
+    """One bad endpoint must not abort a sweep that has already spent tokens."""
+    from verifier_probe import ERROR, call_model
+
+    monkeypatch.setenv("OLLAMA_ENDPOINT", "file:///etc/passwd")
+    row = call_model("ollama:whatever", "sys", "user", timeout=1)
+    assert row["status"] == ERROR
+    assert "refused endpoint" in row["error"]

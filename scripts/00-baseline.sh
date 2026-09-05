@@ -65,11 +65,22 @@ if command -v "${PLANLINT_BIN:-planlint}" >/dev/null 2>&1; then
   # reads PLANLINT_JSON_FLAG rather than assuming `--json`, and this is where
   # that value comes from.
   "$planlint_bin" validate --help >"$EVIDENCE/00-planlint-flags.txt" 2>&1
-  for flag in --json --format=json "--format json" --output=json; do
-    if grep -qF -- "${flag%% *}" "$EVIDENCE/00-planlint-flags.txt" 2>/dev/null; then
-      log "- machine-readable flag present in \`validate --help\`: \`${flag}\`"
+  # Probe for the *option name* only. An earlier revision grepped for
+  # "--format=json", which never appears in help text that reads
+  # "--format FORMAT", so a supported flag went unreported. Report the option
+  # and let the operator write the exact spelling into PLANLINT_JSON_FLAG.
+  json_flag_found=""
+  for option in --json --format --output; do
+    if grep -qE -- "(^|[[:space:],])${option}([[:space:],=]|$)" "$EVIDENCE/00-planlint-flags.txt" 2>/dev/null; then
+      log "- \`validate --help\` mentions \`${option}\`"
+      [ -n "$json_flag_found" ] || json_flag_found="$option"
     fi
   done
+  if [ -n "$json_flag_found" ]; then
+    log "- **set \`PLANLINT_JSON_FLAG\`** to the exact spelling this build wants (first candidate: \`$json_flag_found\`)"
+  else
+    log "- no machine-readable output option found; set \`PLANLINT_JSON_FLAG=\"\"\` (verdicts stay correct, findings degrade to raw text)"
+  fi
 
   if [ -n "${PLANLINT_TARGET:-}" ]; then
     "$planlint_bin" --target "$PLANLINT_TARGET" detect --format json \

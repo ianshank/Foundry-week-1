@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Git pre-commit gate. Install with `make hooks` (sets core.hooksPath).
+#
+# Three checks, cheapest first, and the credential pass is the one that must
+# never be skipped: this repository is public and holds output derived from
+# private source repos, so a leaked transcript is not recoverable by deleting
+# the commit.
+#
+# `git commit --no-verify` bypasses this. That is deliberate -- a gate you
+# cannot bypass gets uninstalled -- but CI runs the same checks, so a bypass
+# buys a local commit, not a green pull request.
+set -uo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root" || exit 1
+
+fail=0
+say() { printf '  %s\n' "$*" >&2; }
+
+printf 'pre-commit: ' >&2
+
+# 1. Credentials in anything staged under a capture directory.
+if ! python3 scripts/scan_evidence.py >/tmp/precommit-scan.$$ 2>&1; then
+  printf 'FAIL\n' >&2
+  say "secret scan found something:"
+  sed 's/^/    /' /tmp/precommit-scan.$$ >&2
+  fail=1
+fi
+rm -f /tmp/precommit-scan.$$
+
+# 2. gitleaks over the staged diff, when installed. Not required -- CI runs it
+#    regardless -- so its absence is a note, not a failure.
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --config .gitleaks.toml --no-banner >/dev/null 2>&1; then
+    printf 'FAIL\n' >&2
+    say "gitleaks flagged the staged diff; run: gitleaks protect --staged --config .gitleaks.toml"
+    fail=1
+  fi
+fi
+
+# 3. Lint only the staged Python. Types and the full suite belong to CI; a
+#    pre-commit hook slow enough to interrupt thinking gets uninstalled.
+staged_py="$(git diff --cached --name-only --diff-filter=ACM -- '*.py')"
+if [ -n "$staged_py" ] && command -v ruff >/dev/null 2>&1; then
+  # shellcheck disable=SC2086
+  if ! output="$(ruff check $staged_py 2>&1)"; then
+    printf 'FAIL\n' >&2
+    printf '%s\n' "$output" | sed 's/^/    /' >&2
+    fail=1
+  fi
+fi
+
+if [ "$fail" -eq 0 ]; then
+  printf 'ok\n' >&2
+  exit 0
+fi
+
+say ""
+say "Nothing was committed. Fix the above, or use --no-verify if you know why"
+say "(CI runs the same checks, so a bypass buys a local commit, not a green PR)."
+exit 1

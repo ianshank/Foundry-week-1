@@ -1,0 +1,79 @@
+# Tooling configuration for the whole repo. Deliberately has no [project]
+# table: the installable package is `mcp_server/`, and this file exists so
+# ruff and mypy see one configuration across the package, the scripts and the
+# tests rather than three.
+#
+# Added because the first revision carried `# noqa: S310`, `# noqa: S603` and
+# `# noqa: E402` comments for linters that were never configured or run --
+# suppressions claiming a finding had been considered when nothing had looked.
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["mcp_server/src", "scripts"]
+extend-exclude = [".venv", "traces", "evidence", "snippets"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # import sorting
+    "B",         # bugbear
+    "S",         # bandit -- the security rules the noqa comments referenced
+    "UP",        # pyupgrade
+    "C4",        # comprehensions
+    "SIM",       # simplify
+    "PTH",       # prefer pathlib
+    "RET",       # return consistency
+    "ARG",       # unused arguments
+    "TRY",       # exception antipatterns
+]
+ignore = [
+    # A long-form rationale in a docstring is worth more than a wrapped line,
+    # and this repo's docstrings carry the reasoning that the code cannot.
+    "E501",
+    # `raise ... from err` is enforced where it clarifies; TRY003's ban on long
+    # messages in raise sites fights the guard rejections, whose whole value is
+    # telling the operator exactly what was refused and why.
+    "TRY003",
+    # The tool modules deliberately catch broad families and map them to
+    # BLOCKED. That is the contract, not an antipattern.
+    "TRY300",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on private helpers by design -- the walk, the loader and the
+# screen are where the defects were, so they are tested directly.
+#
+# S105/S106/S107 (hardcoded credentials) are off in tests because the secret
+# scanner's tests must contain strings shaped exactly like credentials; that is
+# the whole test. They are *not* off anywhere else, and `.gitleaks.toml`
+# allowlists these same files by path so the two tools agree on which vectors
+# are deliberate.
+"**/tests/**" = ["S101", "SLF001", "ARG001", "S105", "S106", "S107", "S603", "S607"]
+"tests/**" = ["S101", "SLF001", "ARG001", "S105", "S106", "S107"]
+# The selfcheck CLI prints to stdout on purpose; it is not the server.
+"**/__main__.py" = ["T201"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["mcp_server/src", "scripts"]
+# Not `strict`. The tool modules return `dict[str, Any]` envelopes on purpose --
+# the MCP wire format is JSON and inventing a TypedDict per verdict shape would
+# be typing theatre over a contract whose stability is enforced by tests. What
+# is switched on below is the subset that catches real defects.
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = false
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+# The SDK is an optional dependency resolved at runtime by
+# `server._load_server_class`, so it may legitimately be absent when mypy runs.
+module = ["mcp.*"]
+ignore_missing_imports = true

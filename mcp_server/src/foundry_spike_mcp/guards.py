@@ -6,17 +6,30 @@ tool. Every guard fails closed: when a guard cannot prove a call is safe it
 raises :class:`GuardRejection`, and the caller maps that to BLOCKED.
 
 A guard never downgrades a rejection into a finding, and never into a pass.
+
+**Why the policy constants below are hard-coded.** Deployment settings live in
+`config.py` and come from the environment. The verb allow list, the flag deny
+list and the credential patterns do not, and that asymmetry is deliberate: an
+allow list widened by an environment variable is not an allow list. Changing
+what this tool may execute should require a code change, a review and a test.
 """
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
 #: planlint verbs this wrapper is permitted to invoke. Read-only surface only:
 #: `init`, `new`, `witness` and `make` are absent on purpose.
+#:
+#: All six are reachable through `planlint.run_verb`, which is why the list is
+#: this size. An earlier revision advertised six and could only ever run
+#: `validate`, which reads as capability and is really dead config.
 ALLOWED_VERBS = frozenset({"detect", "validate", "graph", "rules", "waivers", "delta"})
+
+#: Verbs that mutate. Listed rather than merely omitted so that the refusal is
+#: greppable and so a test can assert they are still refused.
+REFUSED_VERBS = frozenset({"init", "new", "witness", "make", "fix", "apply", "write"})
 
 #: Flags that mutate state or bypass checks. Matched against the whole token
 #: and against its `--flag=value` prefix.
@@ -33,12 +46,9 @@ DENIED_FLAGS = frozenset(
     }
 )
 
-#: Values accepted for planlint's severity threshold. Overridable because the
-#: real vocabulary is confirmed in session 1, not guessed here.
-DEFAULT_FAIL_ON = ("ERROR", "WARN", "WARNING", "INFO")
-
-DEFAULT_STDERR_LIMIT = 2000
-DEFAULT_STDOUT_LIMIT = 20000
+#: Options that take a separate value, so the value is not mistaken for a verb
+#: when `assert_safe_argv` hunts for one.
+VALUE_OPTIONS = frozenset({"--target", "--fail-on", "--format", "--output"})
 
 # Secret shapes worth catching before anything is written to an evidence file.
 # Prefix-anchored on purpose: a broad "long opaque string" rule would redact
@@ -49,17 +59,16 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"sk-[A-Za-z0-9_\-]{16,}"), "[REDACTED:api-key]"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:aws-key-id]"),
     (re.compile(r"xox[abprs]-[A-Za-z0-9\-]{10,}"), "[REDACTED:slack-token]"),
-    (re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"), "[REDACTED:jwt]"),
     (
-        re.compile(r"(?i)\b(authorization|bearer)\s*[:=]\s*\S+"),
-        r"\1: [REDACTED]",
+        re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
+        "[REDACTED:jwt]",
     ),
+    (re.compile(r"(?i)\b(authorization|bearer)\s*[:=]\s*\S+"), r"\1: [REDACTED]"),
     (
         re.compile(r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|APIKEY|API_KEY))\s*=\s*\S+"),
         r"\1=[REDACTED]",
     ),
 )
-
 
 #: Public alias. `scripts/scan_evidence.py` scans with this list rather than
 #: keeping its own -- two definitions of "what a secret looks like" drift, and
@@ -81,35 +90,7 @@ class GuardRejection(Exception):
         self.detail = detail
 
 
-def allowed_roots(env: dict[str, str] | None = None) -> list[Path]:
-    """Absolute paths this wrapper may read, from ``PLANLINT_ALLOWED_ROOTS``.
-
-    Falls back to ``PLANLINT_TARGET`` alone when the allow list is unset, so
-    the default configuration is the narrowest one rather than the widest.
-    Relative entries are rejected outright: a relative root is not an allow
-    list, it is a wish about the working directory.
-    """
-    env = os.environ if env is None else env
-    raw = env.get("PLANLINT_ALLOWED_ROOTS", "").strip()
-    if not raw:
-        fallback = env.get("PLANLINT_TARGET", "").strip()
-        raw = fallback
-    entries = [part for part in raw.split(os.pathsep) if part.strip()]
-    if not entries:
-        raise GuardRejection(
-            "no_allowed_roots",
-            "set PLANLINT_ALLOWED_ROOTS or PLANLINT_TARGET to an absolute path",
-        )
-    roots: list[Path] = []
-    for entry in entries:
-        path = Path(entry).expanduser()
-        if not path.is_absolute():
-            raise GuardRejection("relative_allowed_root", entry)
-        roots.append(path.resolve(strict=False))
-    return roots
-
-
-def check_target(target: str, roots: list[Path]) -> Path:
+def check_target(target: str, roots: tuple[Path, ...] | list[Path]) -> Path:
     """Resolve ``target`` and prove it sits inside the allow list.
 
     Resolution happens before the containment test so that ``..`` traversal
@@ -118,6 +99,11 @@ def check_target(target: str, roots: list[Path]) -> Path:
     (exit 2 / BLOCKED), which is a legitimate and interesting result, not a
     guard violation.
     """
+    if not roots:
+        raise GuardRejection(
+            "no_allowed_roots",
+            "set PLANLINT_ALLOWED_ROOTS (or PLANLINT_TARGET) to an absolute path",
+        )
     if not target or not target.strip():
         raise GuardRejection("empty_target")
     candidate = Path(target).expanduser()
@@ -133,8 +119,18 @@ def check_target(target: str, roots: list[Path]) -> Path:
     )
 
 
-def check_fail_on(value: str, allowed: tuple[str, ...] = DEFAULT_FAIL_ON) -> str:
-    """Constrain the severity threshold to a known vocabulary."""
+def check_verb(verb: str) -> str:
+    """Constrain the planlint verb to the read-only surface."""
+    normalised = (verb or "").strip().lower()
+    if not normalised:
+        raise GuardRejection("empty_verb")
+    if normalised not in ALLOWED_VERBS:
+        raise GuardRejection("verb_not_allowed", f"{verb!r} not in {sorted(ALLOWED_VERBS)}")
+    return normalised
+
+
+def check_fail_on(value: str, allowed: tuple[str, ...]) -> str:
+    """Constrain the severity threshold to the vocabulary this build knows."""
     normalised = (value or "").strip().upper()
     if normalised not in allowed:
         raise GuardRejection("bad_fail_on", f"{value!r} not in {list(allowed)}")
@@ -162,14 +158,13 @@ def assert_safe_argv(argv: list[str]) -> None:
             continue
         if token.startswith("-"):
             if "=" not in token:
-                skip_next = token in {"--target", "--fail-on", "--format", "--output"}
+                skip_next = token in VALUE_OPTIONS
             continue
         verb = token
         break
     if verb is None:
         raise GuardRejection("no_verb", " ".join(argv))
-    if verb not in ALLOWED_VERBS:
-        raise GuardRejection("verb_not_allowed", f"{verb} not in {sorted(ALLOWED_VERBS)}")
+    check_verb(verb)
     for token in argv:
         head = token.split("=", 1)[0]
         if head in DENIED_FLAGS:
@@ -190,7 +185,7 @@ def tail(text: str, limit: int) -> str:
 
     Tail rather than head: a stack trace's useful line is at the bottom.
     """
-    if text is None:
+    if not text:
         return ""
     if len(text) <= limit:
         return text

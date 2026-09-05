@@ -8,7 +8,6 @@ verdict.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -176,3 +175,40 @@ def test_json_flag_can_be_disabled_without_breaking_the_verdict(fake_planlint, c
     result = lint_openspec()
     assert result["verdict"] == FINDINGS
     assert "--json" not in result["command"]
+
+
+# --------------------------------------------------------------------------
+# Regression: finding #5. A contract whose premise is a predictable envelope
+# cannot hand callers a different key set per code path.
+# --------------------------------------------------------------------------
+
+
+def test_result_shape_is_identical_across_every_path(fake_planlint, configured, monkeypatch):
+    shapes = []
+    shapes.append(set(lint_openspec().keys()))  # unconfigured: no target
+    configured(fake_planlint(exit_code=0, stdout="{}"))
+    shapes.append(set(lint_openspec().keys()))  # success
+    configured(fake_planlint(exit_code=2, stdout="usage: ..."))
+    shapes.append(set(lint_openspec().keys()))  # blocked by exit code
+    monkeypatch.setenv("PLANLINT_BIN", "/nonexistent/planlint")
+    shapes.append(set(lint_openspec().keys()))  # blocked before exec
+    assert len(set(map(frozenset, shapes))) == 1, shapes
+
+
+def test_malformed_timeout_is_blocked_not_silently_defaulted(fake_planlint, configured):
+    """A misconfigured run could not form an opinion. Substituting the default
+    would hide an operator mistake behind a plausible-looking result."""
+    configured(fake_planlint(exit_code=0, stdout="{}"), PLANLINT_TIMEOUT="not-a-number")
+    result = lint_openspec()
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == "configuration_error"
+
+
+def test_deeply_nested_stdout_does_not_raise(fake_planlint, configured):
+    """RecursionError from json.loads is not a JSONDecodeError, and the verdict
+    must survive an unparsable payload regardless."""
+    configured(fake_planlint(exit_code=1, stdout="[" * 20_000 + "]" * 20_000))
+    result = lint_openspec()
+    assert result["verdict"] == FINDINGS
+    assert result["findings"] is None
+    assert "RecursionError" in result["findings_parse_error"]

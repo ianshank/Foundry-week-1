@@ -36,7 +36,9 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -50,6 +52,57 @@ REVIEW = "REVIEW"
 ERROR = "ERROR"
 
 VERDICT_LINE = re.compile(r"^\s*VERDICT:\s*([A-Z_]+)\s*$", re.MULTILINE)
+
+# Sampling parameters. The runbook requires these to be *identical* across
+# every cell so the comparison is not measuring sampling noise -- which makes
+# them configuration that has to be recorded, not constants buried in a call.
+# Defaults match `configs/probes/system-prompt.md`; every run writes the values
+# it actually used into summary.json, so a matrix cell can be re-derived.
+DEFAULT_TEMPERATURE = float(os.environ.get("PROBE_TEMPERATURE", "0"))
+DEFAULT_TOP_P = float(os.environ.get("PROBE_TOP_P", "1"))
+DEFAULT_MAX_TOKENS = int(os.environ.get("PROBE_MAX_TOKENS", "800"))
+DEFAULT_TIMEOUT = int(os.environ.get("PROBE_TIMEOUT", "180"))
+
+@dataclass(frozen=True)
+class Provider:
+    """Where one provider's OpenAI-compatible endpoint and credential live.
+
+    A record rather than a dict of strings: `credential_required` is a boolean
+    fact about the provider, and encoding it as the string "yes" was both worse
+    to read and, correctly, flagged by the linter as a credential-shaped
+    literal.
+    """
+
+    endpoint_env: str
+    endpoint_default: str
+    credential_env: str
+    credential_hint: str
+    credential_required: bool = False
+
+
+#: A table rather than an if/elif chain, so adding slot D (Foundry Local,
+#: LM Studio, vLLM -- anything OpenAI-shaped) is one row, not a new branch.
+PROVIDERS: dict[str, Provider] = {
+    "github": Provider(
+        endpoint_env="GITHUB_MODELS_ENDPOINT",
+        endpoint_default="https://models.github.ai/inference",
+        credential_env="GITHUB_TOKEN",  # noqa: S106 - an env var name, not a value
+        credential_hint="a fine-grained PAT with the models:read permission",
+        credential_required=True,
+    ),
+    "ollama": Provider(
+        endpoint_env="OLLAMA_ENDPOINT",
+        endpoint_default="http://localhost:11434/v1",
+        credential_env="OLLAMA_API_KEY",  # noqa: S106 - an env var name, not a value
+        credential_hint="not needed for a local Ollama",
+    ),
+    "openai-compatible": Provider(
+        endpoint_env="OPENAI_COMPATIBLE_ENDPOINT",
+        endpoint_default="",
+        credential_env="OPENAI_COMPATIBLE_KEY",  # noqa: S106 - an env var name, not a value
+        credential_hint="whatever the endpoint expects, if anything",
+    ),
+}
 
 # Prose that a release-channel reader would take as "this run passed".
 _LAUNDER = [
@@ -114,18 +167,46 @@ def _unnegated_hit(pattern: re.Pattern[str], text: str) -> bool:
     return False
 
 
+#: The only schemes an endpoint may use. Endpoints come from the environment
+#: (`OLLAMA_ENDPOINT`, `GITHUB_MODELS_ENDPOINT`), so `file:///etc/passwd` is
+#: reachable by a typo or a bad .env -- `urlopen` would happily read it and the
+#: response would land in a saved transcript. Validated rather than suppressed.
+ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
+class EndpointError(ValueError):
+    """An endpoint URL this script refuses to open."""
+
+
+def _validate_endpoint(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() not in ALLOWED_SCHEMES:
+        raise EndpointError(
+            f"endpoint scheme {parsed.scheme!r} is not one of {sorted(ALLOWED_SCHEMES)}: {url}"
+        )
+    if not parsed.netloc:
+        raise EndpointError(f"endpoint has no host: {url}")
+    return url
+
+
 def _post(url: str, payload: dict[str, Any], headers: dict[str, str], timeout: int) -> dict[str, Any]:
-    request = urllib.request.Request(
-        url,
+    request = urllib.request.Request(  # noqa: S310 - scheme validated above
+        _validate_endpoint(url),
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", **headers},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https/localhost endpoints
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
         return json.loads(response.read().decode("utf-8"))
 
 
-def call_model(slot: str, system: str, user: str, timeout: int) -> dict[str, Any]:
+def call_model(
+    slot: str,
+    system: str,
+    user: str,
+    timeout: int = DEFAULT_TIMEOUT,
+    sampling: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Send one prompt to one `provider:model` slot. Never raises."""
     provider, _, model = slot.partition(":")
     provider = provider.strip().lower()
@@ -133,29 +214,29 @@ def call_model(slot: str, system: str, user: str, timeout: int) -> dict[str, Any
     if not model:
         return {"status": ERROR, "error": f"slot {slot!r} has no model id; use provider:model"}
 
-    if provider == "github":
-        token = os.environ.get("GITHUB_TOKEN", "").strip()
-        if not token:
-            return {"status": ERROR, "error": "GITHUB_TOKEN is unset (needs the models:read permission)"}
-        base = os.environ.get("GITHUB_MODELS_ENDPOINT", "https://models.github.ai/inference").rstrip("/")
-        headers = {"Authorization": f"Bearer {token}"}
-    elif provider == "ollama":
-        base = os.environ.get("OLLAMA_ENDPOINT", "http://localhost:11434/v1").rstrip("/")
-        headers = {}
-    elif provider == "openai-compatible":
-        base = os.environ.get("OPENAI_COMPATIBLE_ENDPOINT", "").rstrip("/")
-        if not base:
-            return {"status": ERROR, "error": "OPENAI_COMPATIBLE_ENDPOINT is unset"}
-        key = os.environ.get("OPENAI_COMPATIBLE_KEY", "").strip()
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
-    else:
-        return {"status": ERROR, "error": f"unknown provider {provider!r}; use github, ollama or openai-compatible"}
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        return {
+            "status": ERROR,
+            "error": f"unknown provider {provider!r}; use one of {sorted(PROVIDERS)}",
+        }
 
-    payload = {
+    base = os.environ.get(spec.endpoint_env, spec.endpoint_default).rstrip("/")
+    if not base:
+        return {"status": ERROR, "error": f"{spec.endpoint_env} is unset"}
+
+    credential = os.environ.get(spec.credential_env, "").strip()
+    if spec.credential_required and not credential:
+        return {
+            "status": ERROR,
+            "error": f"{spec.credential_env} is unset ({spec.credential_hint})",
+        }
+    headers = {"Authorization": f"Bearer {credential}"} if credential else {}
+
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        "temperature": 0,
-        "max_tokens": 800,
+        **(sampling or {"temperature": DEFAULT_TEMPERATURE, "max_tokens": DEFAULT_MAX_TOKENS}),
     }
 
     started = time.monotonic()
@@ -166,6 +247,8 @@ def call_model(slot: str, system: str, user: str, timeout: int) -> dict[str, Any
         # Rate limits are expected on the GitHub free tier; recording the
         # status separates "the model laundered a failure" from "we never asked".
         return {"status": ERROR, "error": f"HTTP {error.code}", "detail": detail}
+    except EndpointError as error:
+        return {"status": ERROR, "error": f"refused endpoint: {error}"}
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         return {"status": ERROR, "error": f"{type(error).__name__}: {error}"}
     except json.JSONDecodeError as error:
@@ -270,7 +353,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--system", type=Path, default=PROBES / "system-prompt.md")
     parser.add_argument("--expect", default="FINDINGS", choices=["PASS", "FINDINGS", "BLOCKED", "NOT_APPLICABLE"])
     parser.add_argument("--out", type=Path, default=REPO / "traces" / "raw")
-    parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
+    parser.add_argument("--top-p", dest="top_p", type=float, default=DEFAULT_TOP_P)
+    parser.add_argument("--max-tokens", dest="max_tokens", type=int, default=DEFAULT_MAX_TOKENS)
     args = parser.parse_args(argv)
 
     slots = [slot.strip() for slot in args.models.split(",") if slot.strip()]
@@ -289,10 +375,19 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = args.out / f"{stamp}-{args.prompt.stem}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # One sampling dict, shared by every slot. The runbook's requirement that
+    # the parameters be identical across cells is enforced here rather than
+    # trusted to the operator retyping them into four Playground panes.
+    sampling = {
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "max_tokens": args.max_tokens,
+    }
+
     rows: list[dict[str, Any]] = []
     for slot in slots:
         print(f"-> {slot}", file=sys.stderr, flush=True)
-        response = call_model(slot, system, user, args.timeout)
+        response = call_model(slot, system, user, args.timeout, sampling)
         if response["status"] == ERROR:
             row = {"slot": slot, "screen": ERROR, **response}
         else:
@@ -307,6 +402,10 @@ def main(argv: list[str] | None = None) -> int:
         "prompt": _rel(args.prompt),
         "system_prompt": _rel(args.system),
         "expected_verdict": args.expect,
+        # Recorded so a cell in evidence/02-bakeoff.md can be re-derived, and so
+        # "the parameters were identical" is a checkable claim.
+        "sampling": sampling,
+        "timeout_seconds": args.timeout,
         "screen_is_advisory": (
             "HELD/LAUNDERED/REVIEW is a screen, not a grade. REVIEW means read the "
             "transcript. Every cell in evidence/02-bakeoff.md still needs a human line."

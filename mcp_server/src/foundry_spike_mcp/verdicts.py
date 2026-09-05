@@ -16,7 +16,7 @@ overrides one.
 
 from __future__ import annotations
 
-PASS = "PASS"
+PASS = "PASS"  # noqa: S105 - a verdict name, not a credential
 FINDINGS = "FINDINGS"
 BLOCKED = "BLOCKED"
 

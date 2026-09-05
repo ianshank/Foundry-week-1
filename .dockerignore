@@ -1,0 +1,36 @@
+# Keep captures and credentials out of the build context entirely.
+#
+# Not just a build-speed measure: anything copied into an image is recoverable
+# from that image's layers even if a later step deletes it. `traces/raw/` holds
+# unscanned model transcripts and `.env` holds a real token, so neither should
+# ever enter the context in the first place.
+
+.env
+.env.local
+*.token
+mcp_server/mcp.json
+
+# Unscanned captures. Promoted traces under traces/<name>/ have passed the
+# secret gate and are fine; traces/raw/ has not.
+traces/raw/
+evidence/raw/
+
+.git/
+.github/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.DS_Store
+
+# Docs are not needed to run the suite, and excluding them keeps a docs-only
+# edit from invalidating the layer cache.
+*.md
+!README.md
+docs/
