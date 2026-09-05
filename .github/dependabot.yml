@@ -1,0 +1,43 @@
+version: 2
+
+# Two ecosystems, for different reasons.
+#
+# `github-actions` is the one that matters. The workflow uses floating major
+# tags (`@v4`, `@v5`, `@v2`), so a compromised tag would run in CI with the
+# default token and no diff to review. Dependabot converts that silent risk
+# into a reviewable pull request. SHA-pinning would be stronger; this is the
+# proportionate control for a spike with `contents: read` and no secrets.
+#
+# `pip` has exactly one direct dependency (`mcp`, bounded >=1.2,<3). Monthly,
+# because a weekly PR for a single bounded dependency is noise, and because the
+# ceiling already stops the failure mode that actually bit us -- an unpinned
+# `mcp>=1.2.0` floating to 2.x, where FastMCP was renamed and the server
+# stopped importing.
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+      - github-actions
+
+  - package-ecosystem: pip
+    directory: /mcp_server
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+    ignore:
+      # A major bump is a rename waiting to happen -- 1.x -> 2.x already cost
+      # us a broken server under green CI. Raise the ceiling by hand, with
+      # `test_server_smoke.py` run against the new major, not by merging a bot PR.
+      - dependency-name: mcp
+        update-types: ["version-update:semver-major"]

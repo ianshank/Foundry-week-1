@@ -26,11 +26,11 @@ trap, and the one most likely to be papered over by a `or 0` somewhere.
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 from typing import Any
 
 from . import guards
+from .config import ConfigError, EvalConfig, load_eval_config
+from .logging_setup import get_logger, log_result
 from .verdicts import (
     BLOCKED,
     BLOCKED_ARTIFACT_MISSING,
@@ -57,51 +57,67 @@ _NAME_KEYS = ("scorer", "scorer_name", "name", "scorer_id", "id")
 #: through a coercion.
 _PASSED_KEYS = ("passed", "pass")
 
-MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
+BLOCKED_CONFIG_ERROR = "configuration_error"
+
+#: Keys present on every result, so callers never have to probe for existence.
+_RESULT_KEYS = (
+    "verdict",
+    "blocked_reason",
+    "blocked_detail",
+    "run_id",
+    "artifact",
+    "scorers",
+    "ignored",
+    "pass_rate",
+    "counts",
+    "contract",
+)
+
+_EMPTY_COUNTS = {"true": 0, "false": 0, "null": 0, "unreadable": 0}
+
+_log = get_logger("scoring")
 
 
-def _allowed_roots() -> list[Path]:
-    """Allow list for artifact reads.
-
-    Separate from planlint's: the eval sink and the spec repo are different
-    trust surfaces and should not be widened together by accident.
-    """
-    raw = os.environ.get("EVAL_ALLOWED_ROOTS", "").strip()
-    if not raw:
-        raw = os.environ.get("EVAL_SINK_DIR", "").strip()
-    if not raw:
-        raise guards.GuardRejection(
-            "no_allowed_roots",
-            "set EVAL_ALLOWED_ROOTS or EVAL_SINK_DIR to an absolute path",
-        )
-    roots = []
-    for entry in raw.split(os.pathsep):
-        if not entry.strip():
-            continue
-        path = Path(entry).expanduser()
-        if not path.is_absolute():
-            raise guards.GuardRejection("relative_allowed_root", entry)
-        roots.append(path.resolve(strict=False))
-    if not roots:
-        raise guards.GuardRejection("no_allowed_roots", raw)
-    return roots
-
-
-def _blocked(reason: str, detail: str, **extra: Any) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "verdict": BLOCKED,
-        "blocked_reason": reason,
-        "blocked_detail": guards.clean(detail, 500),
-        "scorers": [],
-        "pass_rate": None,
-        "contract": {
-            "authority": "artifact",
-            "tri_state": "true | false | null",
-            "note": BLOCKED_NOTE,
-        },
+def _contract() -> dict[str, Any]:
+    return {
+        "authority": "artifact",
+        "tri_state": "true | false | null",
+        "pass_rate_excludes_null": True,
+        "note": (
+            "null means the scorer produced no verdict and is excluded from "
+            "pass_rate. It is not a failure and it is not a pass."
+        ),
     }
-    result.update(extra)
-    return result
+
+
+def _envelope(**overrides: Any) -> dict[str, Any]:
+    """A result with every key present, then the caller's values applied.
+
+    Same reasoning as `planlint._envelope`: a caller reading `result["counts"]`
+    must not have to know whether the artifact was ever opened.
+    """
+    base: dict[str, Any] = dict.fromkeys(_RESULT_KEYS)
+    base.update(
+        verdict=BLOCKED,
+        scorers=[],
+        ignored=[],
+        pass_rate=None,
+        counts=dict(_EMPTY_COUNTS),
+        contract=_contract(),
+    )
+    base.update(overrides)
+    return base
+
+
+def _blocked(reason: str, detail: str, limit: int = 500, **extra: Any) -> dict[str, Any]:
+    blocked = _envelope(
+        verdict=BLOCKED,
+        blocked_reason=reason,
+        blocked_detail=guards.clean(detail, limit),
+        **extra,
+    )
+    blocked["contract"] = {**_contract(), "note": BLOCKED_NOTE}
+    return blocked
 
 
 def _normalise_passed(value: Any) -> bool | None | str:
@@ -219,7 +235,11 @@ def _aggregate(scorers: list[dict[str, Any]]) -> tuple[float | None, dict[str, i
     return pass_rate, counts
 
 
-def score_run(run_id: str, artifact_path: str | None = None) -> dict[str, Any]:
+def score_run(
+    run_id: str,
+    artifact_path: str | None = None,
+    config: EvalConfig | None = None,
+) -> dict[str, Any]:
     """Read one eval-harness run artifact and report per-scorer verdicts.
 
     Read-only. Does not execute the harness, does not import it, and does not
@@ -240,26 +260,36 @@ def score_run(run_id: str, artifact_path: str | None = None) -> dict[str, Any]:
     run_id = str(run_id).strip()
 
     try:
-        roots = _allowed_roots()
-    except guards.GuardRejection as rejection:
-        return _blocked(BLOCKED_GUARD_REJECTED, str(rejection), run_id=run_id)
+        config = config or load_eval_config()
+    except ConfigError as error:
+        return _blocked(BLOCKED_CONFIG_ERROR, str(error), run_id=run_id)
+
+    if not config.allowed_roots:
+        return _blocked(
+            BLOCKED_GUARD_REJECTED,
+            "set EVAL_ALLOWED_ROOTS or EVAL_SINK_DIR to an absolute path",
+            run_id=run_id,
+        )
 
     if artifact_path:
         candidate = artifact_path
     else:
         if any(sep in run_id for sep in ("/", "\\", "..")):
-            return _blocked(BLOCKED_GUARD_REJECTED, f"run_id looks like a path: {run_id!r}", run_id=run_id)
-        sink = os.environ.get("EVAL_SINK_DIR", "").strip()
-        if not sink:
+            return _blocked(
+                BLOCKED_GUARD_REJECTED, f"run_id looks like a path: {run_id!r}", run_id=run_id
+            )
+        if config.sink_dir is None:
             return _blocked(
                 BLOCKED_GUARD_REJECTED,
                 "EVAL_SINK_DIR is unset and no artifact_path was given",
                 run_id=run_id,
             )
-        candidate = str(Path(sink).expanduser() / f"{run_id}.json")
+        candidate = str(config.sink_dir / f"{run_id}.json")
 
     try:
-        resolved = guards.check_target(candidate, roots)
+        resolved = guards.check_target(
+            candidate, config.allowed_roots, "EVAL_ALLOWED_ROOTS (or EVAL_SINK_DIR)"
+        )
     except guards.GuardRejection as rejection:
         return _blocked(BLOCKED_GUARD_REJECTED, str(rejection), run_id=run_id)
 
@@ -273,18 +303,21 @@ def score_run(run_id: str, artifact_path: str | None = None) -> dict[str, Any]:
 
     try:
         size = resolved.stat().st_size
-        if size > MAX_ARTIFACT_BYTES:
+        if size > config.max_artifact_bytes:
             return _blocked(
                 BLOCKED_ARTIFACT_UNREADABLE,
-                f"artifact is {size} bytes, over the {MAX_ARTIFACT_BYTES} limit",
+                f"artifact is {size} bytes, over the {config.max_artifact_bytes} limit",
                 run_id=run_id,
                 artifact=str(resolved),
             )
         document = json.loads(resolved.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as error:
+    except (json.JSONDecodeError, RecursionError) as error:
+        # RecursionError comes from `json.loads` on deeply nested input and is
+        # not a JSONDecodeError. Uncaught it escaped this function entirely,
+        # contradicting the "never raises" contract in the module docstring.
         return _blocked(
             BLOCKED_ARTIFACT_UNREADABLE,
-            f"artifact is not JSON: {error}",
+            f"artifact is not usable JSON: {type(error).__name__}: {error}",
             run_id=run_id,
             artifact=str(resolved),
         )
@@ -296,7 +329,17 @@ def score_run(run_id: str, artifact_path: str | None = None) -> dict[str, Any]:
             artifact=str(resolved),
         )
 
-    scorers, ignored = _collect_scorers(document)
+    try:
+        scorers, ignored = _collect_scorers(document)
+    except RecursionError:
+        # The walk is recursive too. A document deep enough to parse but too
+        # deep to walk is still "could not read it", never an empty pass.
+        return _blocked(
+            BLOCKED_ARTIFACT_UNREADABLE,
+            "artifact nests deeper than the walk can follow",
+            run_id=run_id,
+            artifact=str(resolved),
+        )
     if not scorers:
         detail = (
             "no object in the artifact carried a recognised verdict key "
@@ -330,22 +373,17 @@ def score_run(run_id: str, artifact_path: str | None = None) -> dict[str, Any]:
         verdict = BLOCKED
         blocked_reason = BLOCKED_NO_SCORED_RESULTS
 
-    return {
-        "verdict": verdict,
-        "blocked_reason": blocked_reason,
-        "run_id": run_id,
-        "artifact": str(resolved),
-        "scorers": scorers,
-        "ignored": ignored,
-        "pass_rate": pass_rate,
-        "counts": counts,
-        "contract": {
-            "authority": "artifact",
-            "tri_state": "true | false | null",
-            "pass_rate_excludes_null": True,
-            "note": (
-                "null means the scorer produced no verdict and is excluded from "
-                "pass_rate. It is not a failure and it is not a pass."
-            ),
-        },
-    }
+    result = _envelope(
+        verdict=verdict,
+        blocked_reason=blocked_reason,
+        run_id=run_id,
+        artifact=str(resolved),
+        scorers=scorers,
+        ignored=ignored,
+        pass_rate=pass_rate,
+        counts=counts,
+    )
+    if verdict == BLOCKED:
+        result["contract"] = {**_contract(), "note": BLOCKED_NOTE}
+    log_result(_log, "score_run", result)
+    return result

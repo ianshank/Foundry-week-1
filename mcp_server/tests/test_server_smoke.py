@@ -82,3 +82,64 @@ def test_descriptions_carry_the_authority_boundary(tool_name, phrase):
     before deciding to call. If the BLOCKED and null rules fall out of these
     docstrings, the guard rails are code-only and the model never sees them."""
     assert phrase in (_tools()[tool_name].description or "")
+
+
+# --------------------------------------------------------------------------
+# SDK compatibility. Both majors are supported, so both are tested: the
+# installed one for real, the other through a stub. A compat path that is
+# never exercised is a compat path that does not work.
+# --------------------------------------------------------------------------
+
+
+def test_loader_reports_which_sdk_major_it_found():
+    from foundry_spike_mcp.server import _load_server_class
+
+    server_class, major = _load_server_class()
+    assert major in (1, 2)
+    assert callable(server_class)
+
+
+def test_loader_falls_back_to_fastmcp_when_only_the_1x_api_exists(monkeypatch):
+    """Simulates an environment the Toolkit set up on mcp 1.x."""
+    import importlib
+    import types
+
+    from foundry_spike_mcp import server as server_module
+
+    class _StubFastMCP:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def tool(self):
+            return lambda fn: fn
+
+    stub = types.ModuleType("mcp.server.fastmcp")
+    stub.FastMCP = _StubFastMCP  # type: ignore[attr-defined]
+
+    real_import = importlib.import_module
+
+    def fake_import(name: str, *args, **kwargs):
+        if name == "mcp.server.mcpserver":
+            raise ImportError("No module named 'mcp.server.mcpserver'")
+        if name == "mcp.server.fastmcp":
+            return stub
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    server_class, major = server_module._load_server_class()
+    assert server_class is _StubFastMCP
+    assert major == 1
+
+
+def test_missing_sdk_raises_an_actionable_message_not_a_bare_importerror(monkeypatch):
+    import importlib
+
+    from foundry_spike_mcp import server as server_module
+
+    def fake_import(name: str, *args, **kwargs):
+        raise ImportError(f"No module named {name!r}")
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    with pytest.raises(RuntimeError) as caught:
+        server_module._load_server_class()
+    assert "pip install" in str(caught.value)

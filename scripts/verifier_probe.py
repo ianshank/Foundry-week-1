@@ -36,7 +36,9 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -50,6 +52,79 @@ REVIEW = "REVIEW"
 ERROR = "ERROR"
 
 VERDICT_LINE = re.compile(r"^\s*VERDICT:\s*([A-Z_]+)\s*$", re.MULTILINE)
+
+# Sampling parameters. The runbook requires these to be *identical* across
+# every cell so the comparison is not measuring sampling noise -- which makes
+# them configuration that has to be recorded, not constants buried in a call.
+# Defaults match `configs/probes/system-prompt.md`; every run writes the values
+# it actually used into summary.json, so a matrix cell can be re-derived.
+#
+# Literals, read from the environment inside `main()` rather than here. An
+# earlier revision did `float(os.environ.get("PROBE_TOP_P", "1"))` at module
+# scope, so `PROBE_TOP_P=abc` crashed the script with a traceback *before*
+# argument parsing -- and worse, before `--help`. That directly contradicted
+# this repo's own stance in `config.py`: absent falls back to a documented
+# default, malformed is an actionable failure, and neither is a stack trace.
+DEFAULT_TEMPERATURE = 0.0
+DEFAULT_TOP_P = 1.0
+DEFAULT_MAX_TOKENS = 800
+DEFAULT_TIMEOUT = 180
+
+
+class ProbeConfigError(ValueError):
+    """A PROBE_* variable was set to something unusable."""
+
+
+def _env_number(name: str, default: float, cast: Any) -> Any:
+    """Read one numeric setting. Absent -> default; malformed -> raise."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return cast(raw)
+    except ValueError as error:
+        raise ProbeConfigError(f"{name}={raw!r} is not a valid {cast.__name__}") from error
+
+@dataclass(frozen=True)
+class Provider:
+    """Where one provider's OpenAI-compatible endpoint and credential live.
+
+    A record rather than a dict of strings: `credential_required` is a boolean
+    fact about the provider, and encoding it as the string "yes" was both worse
+    to read and, correctly, flagged by the linter as a credential-shaped
+    literal.
+    """
+
+    endpoint_env: str
+    endpoint_default: str
+    credential_env: str
+    credential_hint: str
+    credential_required: bool = False
+
+
+#: A table rather than an if/elif chain, so adding slot D (Foundry Local,
+#: LM Studio, vLLM -- anything OpenAI-shaped) is one row, not a new branch.
+PROVIDERS: dict[str, Provider] = {
+    "github": Provider(
+        endpoint_env="GITHUB_MODELS_ENDPOINT",
+        endpoint_default="https://models.github.ai/inference",
+        credential_env="GITHUB_TOKEN",  # noqa: S106 - an env var name, not a value
+        credential_hint="a fine-grained PAT with the models:read permission",
+        credential_required=True,
+    ),
+    "ollama": Provider(
+        endpoint_env="OLLAMA_ENDPOINT",
+        endpoint_default="http://localhost:11434/v1",
+        credential_env="OLLAMA_API_KEY",  # noqa: S106 - an env var name, not a value
+        credential_hint="not needed for a local Ollama",
+    ),
+    "openai-compatible": Provider(
+        endpoint_env="OPENAI_COMPATIBLE_ENDPOINT",
+        endpoint_default="",
+        credential_env="OPENAI_COMPATIBLE_KEY",  # noqa: S106 - an env var name, not a value
+        credential_hint="whatever the endpoint expects, if anything",
+    ),
+}
 
 # Prose that a release-channel reader would take as "this run passed".
 _LAUNDER = [
@@ -114,18 +189,50 @@ def _unnegated_hit(pattern: re.Pattern[str], text: str) -> bool:
     return False
 
 
+#: The only schemes an endpoint may use. Endpoints come from the environment
+#: (`OLLAMA_ENDPOINT`, `GITHUB_MODELS_ENDPOINT`), so `file:///etc/passwd` is
+#: reachable by a typo or a bad .env -- `urlopen` would happily read it and the
+#: response would land in a saved transcript. Validated rather than suppressed.
+ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
+class EndpointError(ValueError):
+    """An endpoint URL this script refuses to open."""
+
+
+def _validate_endpoint(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() not in ALLOWED_SCHEMES:
+        raise EndpointError(
+            f"endpoint scheme {parsed.scheme!r} is not one of {sorted(ALLOWED_SCHEMES)}: {url}"
+        )
+    if not parsed.netloc:
+        raise EndpointError(f"endpoint has no host: {url}")
+    return url
+
+
 def _post(url: str, payload: dict[str, Any], headers: dict[str, str], timeout: int) -> dict[str, Any]:
-    request = urllib.request.Request(
-        url,
+    request = urllib.request.Request(  # noqa: S310 - scheme validated above
+        _validate_endpoint(url),
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", **headers},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https/localhost endpoints
-        return json.loads(response.read().decode("utf-8"))
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        # errors="replace": a provider returning a non-UTF-8 body would
+        # otherwise raise UnicodeDecodeError, which is a ValueError and not
+        # caught below -- breaking `call_model`'s "never raises" promise over
+        # something that is only ever a garbled error page.
+        return json.loads(response.read().decode("utf-8", errors="replace"))
 
 
-def call_model(slot: str, system: str, user: str, timeout: int) -> dict[str, Any]:
+def call_model(
+    slot: str,
+    system: str,
+    user: str,
+    timeout: int = DEFAULT_TIMEOUT,
+    sampling: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Send one prompt to one `provider:model` slot. Never raises."""
     provider, _, model = slot.partition(":")
     provider = provider.strip().lower()
@@ -133,29 +240,29 @@ def call_model(slot: str, system: str, user: str, timeout: int) -> dict[str, Any
     if not model:
         return {"status": ERROR, "error": f"slot {slot!r} has no model id; use provider:model"}
 
-    if provider == "github":
-        token = os.environ.get("GITHUB_TOKEN", "").strip()
-        if not token:
-            return {"status": ERROR, "error": "GITHUB_TOKEN is unset (needs the models:read permission)"}
-        base = os.environ.get("GITHUB_MODELS_ENDPOINT", "https://models.github.ai/inference").rstrip("/")
-        headers = {"Authorization": f"Bearer {token}"}
-    elif provider == "ollama":
-        base = os.environ.get("OLLAMA_ENDPOINT", "http://localhost:11434/v1").rstrip("/")
-        headers = {}
-    elif provider == "openai-compatible":
-        base = os.environ.get("OPENAI_COMPATIBLE_ENDPOINT", "").rstrip("/")
-        if not base:
-            return {"status": ERROR, "error": "OPENAI_COMPATIBLE_ENDPOINT is unset"}
-        key = os.environ.get("OPENAI_COMPATIBLE_KEY", "").strip()
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
-    else:
-        return {"status": ERROR, "error": f"unknown provider {provider!r}; use github, ollama or openai-compatible"}
+    spec = PROVIDERS.get(provider)
+    if spec is None:
+        return {
+            "status": ERROR,
+            "error": f"unknown provider {provider!r}; use one of {sorted(PROVIDERS)}",
+        }
 
-    payload = {
+    base = os.environ.get(spec.endpoint_env, spec.endpoint_default).rstrip("/")
+    if not base:
+        return {"status": ERROR, "error": f"{spec.endpoint_env} is unset"}
+
+    credential = os.environ.get(spec.credential_env, "").strip()
+    if spec.credential_required and not credential:
+        return {
+            "status": ERROR,
+            "error": f"{spec.credential_env} is unset ({spec.credential_hint})",
+        }
+    headers = {"Authorization": f"Bearer {credential}"} if credential else {}
+
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        "temperature": 0,
-        "max_tokens": 800,
+        **(sampling or {"temperature": DEFAULT_TEMPERATURE, "max_tokens": DEFAULT_MAX_TOKENS}),
     }
 
     started = time.monotonic()
@@ -166,10 +273,18 @@ def call_model(slot: str, system: str, user: str, timeout: int) -> dict[str, Any
         # Rate limits are expected on the GitHub free tier; recording the
         # status separates "the model laundered a failure" from "we never asked".
         return {"status": ERROR, "error": f"HTTP {error.code}", "detail": detail}
+    except EndpointError as error:
+        return {"status": ERROR, "error": f"refused endpoint: {error}"}
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         return {"status": ERROR, "error": f"{type(error).__name__}: {error}"}
-    except json.JSONDecodeError as error:
-        return {"status": ERROR, "error": f"response was not JSON: {error}"}
+    except (json.JSONDecodeError, RecursionError) as error:
+        # RecursionError comes from `json.loads` on deeply nested input and is
+        # not a JSONDecodeError. Caught in the MCP tools already; missing here
+        # was the same oversight in a second place.
+        return {
+            "status": ERROR,
+            "error": f"response was not usable JSON: {type(error).__name__}: {error}",
+        }
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     try:
@@ -270,8 +385,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--system", type=Path, default=PROBES / "system-prompt.md")
     parser.add_argument("--expect", default="FINDINGS", choices=["PASS", "FINDINGS", "BLOCKED", "NOT_APPLICABLE"])
     parser.add_argument("--out", type=Path, default=REPO / "traces" / "raw")
-    parser.add_argument("--timeout", type=int, default=180)
+    # Defaults stay None here and are filled from the environment *after*
+    # parsing. Reading the environment first meant a malformed PROBE_* value
+    # aborted before argparse had registered these options -- so `--help` died
+    # too, and its usage line was missing half the flags. Register everything,
+    # let argparse own `--help`, then resolve.
+    parser.add_argument("--timeout", type=int, default=None)
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--top-p", dest="top_p", type=float, default=None)
+    parser.add_argument("--max-tokens", dest="max_tokens", type=int, default=None)
     args = parser.parse_args(argv)
+
+    # An explicit flag always wins; the environment fills the rest. Malformed
+    # is a one-line argparse error, never a traceback -- the same stance
+    # `config.py` takes for the MCP tools.
+    try:
+        if args.timeout is None:
+            args.timeout = _env_number("PROBE_TIMEOUT", DEFAULT_TIMEOUT, int)
+        if args.temperature is None:
+            args.temperature = _env_number("PROBE_TEMPERATURE", DEFAULT_TEMPERATURE, float)
+        if args.top_p is None:
+            args.top_p = _env_number("PROBE_TOP_P", DEFAULT_TOP_P, float)
+        if args.max_tokens is None:
+            args.max_tokens = _env_number("PROBE_MAX_TOKENS", DEFAULT_MAX_TOKENS, int)
+    except ProbeConfigError as error:
+        parser.error(str(error))
 
     slots = [slot.strip() for slot in args.models.split(",") if slot.strip()]
     if not slots:
@@ -289,10 +427,19 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = args.out / f"{stamp}-{args.prompt.stem}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # One sampling dict, shared by every slot. The runbook's requirement that
+    # the parameters be identical across cells is enforced here rather than
+    # trusted to the operator retyping them into four Playground panes.
+    sampling = {
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "max_tokens": args.max_tokens,
+    }
+
     rows: list[dict[str, Any]] = []
     for slot in slots:
         print(f"-> {slot}", file=sys.stderr, flush=True)
-        response = call_model(slot, system, user, args.timeout)
+        response = call_model(slot, system, user, args.timeout, sampling)
         if response["status"] == ERROR:
             row = {"slot": slot, "screen": ERROR, **response}
         else:
@@ -307,6 +454,10 @@ def main(argv: list[str] | None = None) -> int:
         "prompt": _rel(args.prompt),
         "system_prompt": _rel(args.system),
         "expected_verdict": args.expect,
+        # Recorded so a cell in evidence/02-bakeoff.md can be re-derived, and so
+        # "the parameters were identical" is a checkable claim.
+        "sampling": sampling,
+        "timeout_seconds": args.timeout,
         "screen_is_advisory": (
             "HELD/LAUNDERED/REVIEW is a screen, not a grade. REVIEW means read the "
             "transcript. Every cell in evidence/02-bakeoff.md still needs a human line."

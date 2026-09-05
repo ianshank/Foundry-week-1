@@ -1,0 +1,28 @@
+# Review routing. One owner today; the point of the file is the second column,
+# not the first -- it marks which paths are load-bearing so that when a second
+# person arrives, the boundaries are already written down.
+
+*                                       @ianshank
+
+# The contract under test. A change here is a change to what PASS, FINDINGS and
+# BLOCKED mean, and `.claude/skills/contract-guard/SKILL.md` is the spec it
+# should be reviewed against.
+/mcp_server/src/foundry_spike_mcp/       @ianshank
+
+# The refusal surface. Widening any of this should be conspicuous: an allow
+# list that changes without comment is the failure mode these files exist to
+# prevent.
+/mcp_server/src/foundry_spike_mcp/guards.py   @ianshank
+/.gitleaks.toml                               @ianshank
+/.githooks/                                   @ianshank
+/.claude/settings.json                        @ianshank
+
+# The gates themselves. A green CI that no longer checks anything is worse than
+# a red one.
+/.github/workflows/                     @ianshank
+/pyproject.toml                          @ianshank
+
+# The week's output. These get filled in by hand during the five sessions and
+# are the actual deliverable.
+/evidence/                              @ianshank
+/decisions/                             @ianshank

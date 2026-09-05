@@ -35,9 +35,9 @@
 | planlint exit 0 → PASS | | `evidence/03-mcp-selfcheck.json` |
 | planlint exit 1 → FINDINGS | | `evidence/03-mcp-selfcheck.json` |
 | planlint exit 2 → BLOCKED (not a spec failure) | | `evidence/03-mcp-selfcheck.json` |
-| timeout → BLOCKED, never FINDINGS | | `mcp/tests/test_planlint_contract.py` |
-| scorer `true` / `false` / `null` distinct | | `mcp/tests/test_scoring.py` |
-| `pass_rate` excludes null; null when nothing scored | | `mcp/tests/test_scoring.py` |
+| timeout → BLOCKED, never FINDINGS | | `mcp_server/tests/test_planlint_contract.py` |
+| scorer `true` / `false` / `null` distinct | | `mcp_server/tests/test_scoring.py` |
+| `pass_rate` excludes null; null when nothing scored | | `mcp_server/tests/test_scoring.py` |
 | the verdict survived the trip *into the model* | | `traces/` |
 
 The last row is the one that is not covered by the test suite. The tests prove
@@ -104,7 +104,7 @@ required" stops being true.
 | Private MCP endpoint: virtual network with a dedicated MCP subnet (in practice Container Apps, internal ingress) | | | |
 | Trace egress: shared run/trace ID contract, secret masking, field allow list | | | |
 
-The stdio server in `mcp/` is week-1 only. Nothing about it carries to a hosted
+The stdio server in `mcp_server/` is week-1 only. Nothing about it carries to a hosted
 agent except the tool contract, which is the part worth carrying.
 
 ---

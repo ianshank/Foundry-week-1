@@ -1,0 +1,57 @@
+title = "Foundry week-1 spike"
+
+# Second line of defence, not the first. `scripts/scan_evidence.py` runs the
+# same class of check over capture directories before anything is committed;
+# gitleaks runs over git history in CI and catches what a skipped `make scan`
+# would have let through. Two tools rather than one because they fail
+# differently: the local pass is a habit, and habits lapse.
+#
+# The repository is currently public and holds output derived from private
+# source repos, which is why this is configured at all rather than left to a
+# default scan nobody enabled.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "developer-home-path"
+description = "An absolute developer path leaks the machine layout and usually a username"
+# RE2, not PCRE. gitleaks compiles rules with Go's RE2 engine, which has no
+# lookahead or lookbehind -- an earlier version of this rule used `(?!user\b)`
+# to carve out a generic path and gitleaks *panicked at config load*, taking
+# the whole job down before it scanned anything. Exclusions belong in the
+# allowlist below, which is the RE2-idiomatic place for them.
+# `tests/test_evidence_hygiene.py` now rejects lookarounds in this file.
+regex = '''(?i)(PLANLINT_TARGET|PLANLINT_ALLOWED_ROOTS|AGENTS_REPO|EVAL_SINK_DIR|EVAL_ALLOWED_ROOTS|SPIKE_HOME)\s*=\s*["']?(/Users/|/home/|C:\\Users\\)[^"'\s]+'''
+tags = ["path", "pii"]
+
+[allowlist]
+description = "Fixtures, examples, and the redaction patterns themselves"
+
+paths = [
+  # `.env.example` is the template; its values are placeholders by definition.
+  '''\.env\.example$''',
+  # The credential *shapes* live here -- redaction patterns and their tests
+  # necessarily contain strings that look exactly like credentials.
+  '''mcp_server/src/foundry_spike_mcp/guards\.py$''',
+  '''mcp_server/tests/test_guards\.py$''',
+  '''mcp_server/tests/test_planlint_contract\.py$''',
+  '''tests/test_evidence_hygiene\.py$''',
+  # mcp.json.example carries ALLCAPS placeholders, not values.
+  '''mcp_server/mcp\.json\.example$''',
+]
+
+regexes = [
+  # AWS's own documentation example key, used as a redaction test vector.
+  '''AKIAIOSFODNN7EXAMPLE''',
+  # Placeholders. If one of these ever holds a real value the placeholder text
+  # is gone, so the allowlist stops applying -- which is the intended behaviour.
+  '''/ABSOLUTE/PATH/TO/''',
+  '''<<<\s*PASTE''',
+  '''hunter2secretvalue''',
+]
+
+# Deliberately NOT allowlisted:
+#   traces/  evidence/  snippets/  configs/
+# Those are exactly where a real transcript, a generated adapter or a pasted
+# proposal lands. If gitleaks fires there, it is doing its job.

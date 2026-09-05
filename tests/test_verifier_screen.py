@@ -7,9 +7,14 @@ after the fact.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from verifier_probe import ERROR, HELD, LAUNDERED, REVIEW, _strip_html_comments, screen
+
+REPO = Path(__file__).resolve().parents[1]
 
 
 def test_declared_verdict_matching_expectation_is_held():
@@ -143,3 +148,175 @@ def test_negated_failure_words_do_not_count_as_holding_the_line():
     passed" is a laundered one. Suppressing only one column would move the
     false positive rather than remove it."""
     assert screen("It did not fail in any meaningful way.", "FINDINGS")["screen"] == REVIEW
+
+
+# --------------------------------------------------------------------------
+# Endpoints come from the environment, so the scheme is validated rather than
+# trusted. `urlopen` will read `file:///etc/passwd` without complaint, and the
+# body would land in a saved transcript under traces/.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["file:///etc/passwd", "ftp://example.com/x", "gopher://example.com", "data:text/plain,x"],
+)
+def test_non_http_endpoints_are_refused(url):
+    from verifier_probe import EndpointError, _validate_endpoint
+
+    with pytest.raises(EndpointError):
+        _validate_endpoint(url)
+
+
+@pytest.mark.parametrize(
+    "url", ["http://localhost:11434/v1", "https://models.github.ai/inference"]
+)
+def test_http_endpoints_are_accepted(url):
+    from verifier_probe import _validate_endpoint
+
+    assert _validate_endpoint(url) == url
+
+
+def test_a_refused_endpoint_is_an_error_row_not_a_crash(monkeypatch):
+    """One bad endpoint must not abort a sweep that has already spent tokens."""
+    from verifier_probe import ERROR, call_model
+
+    monkeypatch.setenv("OLLAMA_ENDPOINT", "file:///etc/passwd")
+    row = call_model("ollama:whatever", "sys", "user", timeout=1)
+    assert row["status"] == ERROR
+    assert "refused endpoint" in row["error"]
+
+
+# --------------------------------------------------------------------------
+# Copilot review, PR #1. Three "never raises" gaps in the probe, all of which
+# would have surfaced mid-sweep after real tokens had been spent.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("var", "value"),
+    [
+        ("PROBE_TOP_P", "abc"),
+        ("PROBE_TEMPERATURE", "hot"),
+        ("PROBE_MAX_TOKENS", "1.5"),
+        ("PROBE_TIMEOUT", "soon"),
+    ],
+)
+def test_a_malformed_probe_setting_is_an_argparse_error_not_a_traceback(monkeypatch, var, value, capsys):
+    """An earlier revision parsed these at *import* time, so a bad value
+    crashed before argument parsing -- and before `--help`. That contradicted
+    this repo's own stance: absent means default, malformed means an
+    actionable failure, and neither means a stack trace."""
+    from verifier_probe import main
+
+    monkeypatch.setenv(var, value)
+    with pytest.raises(SystemExit) as caught:
+        main(["--models", "ollama:x"])
+    assert caught.value.code == 2
+    assert var in capsys.readouterr().err
+
+
+def test_help_still_works_with_a_broken_environment(monkeypatch, capsys):
+    from verifier_probe import main
+
+    monkeypatch.setenv("PROBE_TOP_P", "nonsense")
+    with pytest.raises(SystemExit) as caught:
+        main(["--help"])
+    assert caught.value.code == 0
+
+
+def test_a_non_utf8_response_body_does_not_raise(monkeypatch):
+    """`response.read().decode("utf-8")` raises UnicodeDecodeError, which is a
+    ValueError and was not caught -- so a garbled error page from a provider
+    would have taken down a sweep already part-spent."""
+    import verifier_probe
+
+    class _Response:
+        def read(self):
+            return b"\xff\xfe not utf-8 at all"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr(
+        verifier_probe.urllib.request, "urlopen", lambda *_a, **_k: _Response()
+    )
+    row = verifier_probe.call_model("ollama:x", "sys", "user", timeout=1)
+    assert row["status"] == verifier_probe.ERROR
+    assert "JSON" in row["error"]
+
+
+def test_deeply_nested_response_json_does_not_raise(monkeypatch):
+    """RecursionError from json.loads is not a JSONDecodeError. Fixed in the
+    MCP tools; this was the same oversight in a second place."""
+    import verifier_probe
+
+    payload = ("[" * 20_000 + "]" * 20_000).encode()
+
+    class _Response:
+        def read(self):
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr(
+        verifier_probe.urllib.request, "urlopen", lambda *_a, **_k: _Response()
+    )
+    row = verifier_probe.call_model("ollama:x", "sys", "user", timeout=1)
+    assert row["status"] == verifier_probe.ERROR
+    assert "RecursionError" in row["error"]
+
+
+def test_the_authorization_header_carries_the_real_credential(monkeypatch):
+    """Copilot read `******` here -- GitHub masks credential-shaped text when
+    rendering a diff, so the review saw the mask, not the code. Asserted rather
+    than argued: the header must contain the value the environment holds."""
+    import verifier_probe
+
+    seen: dict[str, str] = {}
+
+    def _capture(url, payload, headers, timeout):
+        seen.update(headers)
+        return {"choices": [{"message": {"content": "VERDICT: FINDINGS"}}]}
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_realtokenvalue1234567890abcdef")
+    monkeypatch.setattr(verifier_probe, "_post", _capture)
+    verifier_probe.call_model("github:some/model", "sys", "user", timeout=1)
+    assert seen["Authorization"] == "Bearer ghp_realtokenvalue1234567890abcdef"
+    assert "*" not in seen["Authorization"]
+
+
+def test_an_explicit_flag_wins_over_a_broken_environment_variable(monkeypatch, tmp_path, capsys):
+    """An explicit flag means the environment variable is never read, so a
+    malformed one the run does not need cannot block it.
+
+    `--out` is passed deliberately: an earlier draft of this test omitted it
+    and wrote a real capture into the repository's `traces/raw/`. A test that
+    writes into the working tree of a repo whose entire subject is not leaking
+    captures is not a small mistake.
+    """
+    from verifier_probe import main
+
+    monkeypatch.setenv("PROBE_MAX_TOKENS", "not-a-number")
+    monkeypatch.setenv("OLLAMA_ENDPOINT", "http://127.0.0.1:1/v1")
+    code = main(
+        [
+            "--models", "ollama:x",
+            "--max-tokens", "100",
+            "--prompt", str(REPO / "configs" / "probes" / "02-verifier.md"),
+            "--out", str(tmp_path / "raw"),
+            "--timeout", "1",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 0, "an unreachable endpoint is an ERROR row, not a laundered failure"
+    assert "PROBE_MAX_TOKENS" not in captured.err, "the bad variable was never read"
+    summary = json.loads(next((tmp_path / "raw").rglob("summary.json")).read_text())
+    assert summary["sampling"]["max_tokens"] == 100

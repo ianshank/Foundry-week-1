@@ -20,11 +20,16 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "mcp" / "src"))
+sys.path.insert(0, str(REPO / "mcp_server" / "src"))
 
 from foundry_spike_mcp.guards import SECRET_PATTERNS  # noqa: E402
 
-DEFAULT_TARGETS = ("evidence", "traces")
+#: Scanned by default. `snippets/` is where step 4.5 parks a generated adapter
+#: (View Snippet output can embed a token), and `configs/` is where a real
+#: OpenSpec proposal gets pasted into a fixture. An earlier revision documented
+#: those as caveats in a README instead of scanning them -- a gate with a
+#: written-down hole is not a gate.
+DEFAULT_TARGETS = ("evidence", "traces", "snippets", "configs", "decisions")
 SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".gz", ".webp"}
 MAX_BYTES = 16 * 1024 * 1024
 

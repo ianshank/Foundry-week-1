@@ -223,3 +223,44 @@ def test_null_never_appears_as_false_anywhere_in_the_payload(sink):
     serialised = json.dumps(result)
     assert '"passed": null' in serialised
     assert result["counts"]["false"] == 0
+
+
+# --------------------------------------------------------------------------
+# Regression: finding #4. `json.loads` raises RecursionError -- not
+# JSONDecodeError -- on deeply nested input, and it escaped score_run entirely,
+# contradicting the "Never raises" contract in the module docstring.
+# --------------------------------------------------------------------------
+
+
+def test_deeply_nested_artifact_is_blocked_not_a_recursion_error(sink):
+    path = sink.dir / "deep.json"  # type: ignore[attr-defined]
+    path.write_text("[" * 20_000 + "]" * 20_000, encoding="utf-8")
+    result = score_run("deep")
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_UNREADABLE
+
+
+def test_oversize_artifact_is_blocked_using_the_configured_limit(sink, monkeypatch):
+    monkeypatch.setenv("EVAL_MAX_ARTIFACT_BYTES", "10")
+    sink("big", {"results": [{"scorer": "a", "passed": True}]})
+    result = score_run("big")
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_UNREADABLE
+
+
+# --------------------------------------------------------------------------
+# Regression: finding #5. Every return carries the same keys, so a caller
+# never has to probe for existence to find out how far the run got.
+# --------------------------------------------------------------------------
+
+
+def test_result_shape_is_identical_across_every_path(sink, tmp_path, monkeypatch):
+    shapes = []
+    monkeypatch.delenv("EVAL_SINK_DIR", raising=False)
+    monkeypatch.delenv("EVAL_ALLOWED_ROOTS", raising=False)
+    shapes.append(set(score_run("x").keys()))          # unconfigured
+    sink("ok", {"results": [{"scorer": "a", "passed": True}]})
+    shapes.append(set(score_run("ok").keys()))         # success
+    shapes.append(set(score_run("missing").keys()))    # absent artifact
+    shapes.append(set(score_run("").keys()))           # rejected argument
+    assert len(set(map(frozenset, shapes))) == 1, shapes

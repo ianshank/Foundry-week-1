@@ -1,16 +1,14 @@
 name: contract
 
-# The tool contract is the deliverable, so it is the thing CI protects.
+# Four jobs, each proving a different claim. They are separate on purpose: the
+# first revision had only `contract`, and a green tick there certified a server
+# that could not import -- because the contract suite passes precisely *because*
+# it avoids the SDK. One tick cannot stand in for two facts.
 #
-# Two jobs on purpose. `contract` proves the verdict logic with nothing
-# installed -- no network, no planlint, no MCP SDK -- because the tool modules
-# import nothing from the transport. `transport` then installs the SDK and
-# starts the actual server.
-#
-# The split exists because the first version had only the first job, and a
-# green run certified a server that could not import: `mcp>=1.2.0` floated to
-# 2.x, where FastMCP was renamed MCPServer. REQUIRE_MCP turns the smoke test's
-# local skip into a hard failure here, so the gap cannot reopen quietly.
+#   contract   the verdict logic is correct, with nothing installed
+#   transport  the thing Agent Builder connects to actually starts
+#   quality    ruff and mypy agree, so the noqa comments mean something
+#   secrets    nothing credential-shaped is in the history
 
 on:
   push:
@@ -21,14 +19,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  contract:
+    name: contract (no dependencies)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 3.10 is the floor declared in mcp/pyproject.toml; if the suite only
-        # passes on the newest interpreter, the floor is wrong.
+        # 3.10 is the floor declared in mcp_server/pyproject.toml. If the suite
+        # only passes on the newest interpreter, the floor is a lie.
         python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
@@ -40,17 +43,14 @@ jobs:
       - name: Install pytest only
         run: python -m pip install --upgrade pip pytest
 
-      - name: Tool contract (no third-party dependency installed)
-        run: python -m pytest
-
-      - name: Secret pass over evidence and traces
-        run: python scripts/scan_evidence.py
+      - name: Tool contract
+        run: python -m pytest -q
 
       - name: Shell scripts parse
-        run: bash -n scripts/00-baseline.sh
+        run: bash -n scripts/00-baseline.sh .githooks/pre-commit .claude/hooks/check-edited-file.sh
 
   transport:
-    # Does the thing Agent Builder connects to actually start?
+    name: transport (SDK installed)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,9 +62,59 @@ jobs:
       - name: Install the server with its pinned SDK
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e "./mcp[dev]"
+          python -m pip install -e "./mcp_server[dev]"
 
       - name: Server builds and registers both tools
         env:
           REQUIRE_MCP: "1"   # a skip here would recreate the blind spot
-        run: python -m pytest mcp/tests/test_server_smoke.py -v
+        run: python -m pytest mcp_server/tests/test_server_smoke.py -v
+
+  quality:
+    name: quality (lint + types)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install linters
+        run: python -m pip install --upgrade pip ruff mypy coverage pytest
+
+      - name: ruff
+        run: ruff check --output-format=github .
+
+      - name: mypy
+        run: mypy
+
+      - name: Coverage floor
+        # Measured here rather than in `contract`, whose whole value is running
+        # with nothing installed. The floor stops 91% from rotting; it does not
+        # claim the tests are good, only that they still exist.
+        run: |
+          python -m coverage run -m pytest -q
+          python -m coverage report
+
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks scans history, so a shallow clone would only ever see the
+          # tip and miss a credential added and removed in an earlier commit.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Capture directories are clean
+        run: python scripts/scan_evidence.py
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml

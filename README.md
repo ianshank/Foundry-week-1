@@ -24,7 +24,7 @@ Full procedure: **[RUNBOOK.md](RUNBOOK.md)**.
 Exit 2 is not a pass and it is not a spec failure. The whole spike is a test of
 whether that distinction survives being handed to a language model — first as
 a raw prompt (step 2), then through an MCP tool into an agent (steps 3–4).
-Everything in `mcp/` exists to make sure that if the distinction is lost, it
+Everything in `mcp_server/` exists to make sure that if the distinction is lost, it
 was lost by the *model* and not by the wrapper.
 
 The same discipline applies to scoring: a scorer's `passed` is `true`, `false`,
@@ -39,12 +39,15 @@ fabricates a result.
 cp .env.example .env && $EDITOR .env      # paths + guard rails
 set -a; source .env; set +a
 
-make setup      # venv + the MCP server, editable
-make test       # contract suite. No network, no planlint, no MCP SDK needed.
+make setup      # venv + the MCP server + linters
+make hooks      # git pre-commit gate (secret scan, gitleaks, lint)
+make validate   # ruff, mypy, the suite, the secret pass -- run before any PR
 make baseline   # session 1: version stamp, dialect card, baseline exit codes
 ```
 
 `make` on its own lists every target against its session.
+
+Branches: `main` (base), `Dev`, `QA`, and feature branches off `main`.
 
 ---
 
@@ -52,13 +55,33 @@ make baseline   # session 1: version stamp, dialect card, baseline exit codes
 
 ```
 RUNBOOK.md                  the procedure, with the draft's defects marked [amended]
+NEXT_STEPS.md               what to do before session 1, and what is still open
+SECURITY.md                 threat model, per-surface controls, known limitations
+CHANGELOG.md                what changed and why, where the diff does not say
+docs/architecture/C4.md     context / container / component views + verdict flow
+
 configs/probes/             system prompt + bake-off fixtures + the four agent probes
-mcp/                        the two read-only MCP tools, and their contract tests
+mcp_server/                 the two read-only MCP tools, and their contract tests
+  src/foundry_spike_mcp/
+    verdicts.py             PASS / FINDINGS / BLOCKED -- the only vocabulary
+    guards.py               POLICY: verb + flag allow lists, path containment (hard-coded)
+    config.py               CONFIG: paths, timeouts, limits (from the environment)
+    planlint.py             run_verb -- the single guarded execution point
+    scoring.py              score_run -- true / false / null preserved
+    logging_setup.py        stderr-only structured logging
+    server.py               transport only; supports mcp 1.x and 2.x
+
 scripts/00-baseline.sh      step 0 evidence capture (records exit codes, never aborts on one)
 scripts/verifier_probe.py   headless backstop for the bake-off's verifier cell
-scripts/scan_evidence.py    secret pass over evidence/ and traces/ before anything is committed
+scripts/scan_evidence.py    the secret gate
+scripts/promote_trace.py    raw capture -> tracked evidence, only if it scans clean
+
+.claude/                    skills, a read-only review agent, a post-edit hook
+.githooks/pre-commit        secret scan + gitleaks + lint on staged Python
+Dockerfile                  reproducible regression env (NOT a way to run the server)
+
 evidence/                   the four evidence files; *.template.md are the blanks
-traces/                     saved conversations and run views
+traces/                     promoted captures; traces/raw/ is gitignored
 decisions/                  the exit artifact — one decision-log row
 snippets/                   step 4.5 adapter candidate, parked and unmerged
 ```
@@ -110,10 +133,22 @@ kernel; this week is only asking whether the Toolkit is a useful bench beside it
 
 Nothing in this repo writes to `Mango_Code_Agent-Harness`, `Agents`, or
 `planlint`. The MCP tools shell out and read files; a test
-(`mcp/tests/test_seam_is_closed.py`) fails if that ever stops being true. The
+(`mcp_server/tests/test_seam_is_closed.py`) fails if that ever stops being true. The
 planlint verb allow list excludes `init`, `new`, `witness` and `make`, and the
 path allow list fails closed.
 
-Run `make scan` before committing anything under `evidence/` or `traces/`.
-`traces/raw/` and `evidence/raw/` are gitignored so an unscanned transcript
-cannot be published by an absent-minded `git add -A`.
+Three layers keep captures from leaking, because this repository is public
+and holds output derived from private source repos:
+
+1. `traces/raw/` and `evidence/raw/` are gitignored, so an unscanned transcript
+   cannot be published by an absent-minded `git add -A`.
+2. `scripts/promote_trace.py` is the only way a capture becomes tracked, and it
+   **refuses** on a scan hit rather than warning.
+3. `make hooks` installs a pre-commit gate, and CI runs both the same scan and
+   gitleaks over history.
+
+Policy is hard-coded on purpose. `guards.py` holds the verb allow list, the
+flag deny list and the credential patterns, and reads no environment variable —
+an allow list that can be widened by setting a variable is not an allow list.
+Deployment settings live in `config.py`. That line is the one architectural
+opinion in this repo worth defending.

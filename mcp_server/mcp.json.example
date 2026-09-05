@@ -20,7 +20,7 @@
       "args": [
         "run",
         "--directory",
-        "/ABSOLUTE/PATH/TO/Foundry-week-1/mcp",
+        "/ABSOLUTE/PATH/TO/Foundry-week-1/mcp_server",
         "foundry-spike-mcp",
         "serve"
       ],
@@ -31,11 +31,15 @@
         "PLANLINT_TIMEOUT": "120",
         "PLANLINT_JSON_FLAG": "--json",
         "EVAL_SINK_DIR": "/ABSOLUTE/PATH/TO/src/Agents/.eval-runs",
-        "EVAL_ALLOWED_ROOTS": "/ABSOLUTE/PATH/TO/src/Agents/.eval-runs"
+        "EVAL_ALLOWED_ROOTS": "/ABSOLUTE/PATH/TO/src/Agents/.eval-runs",
+        "FOUNDRY_SPIKE_LOG_LEVEL": "WARNING"
       }
     }
   },
   "//alternative": [
+    "Logging goes to stderr; the Toolkit surfaces it in the MCP server output",
+    "channel. Set FOUNDRY_SPIKE_LOG_LEVEL=DEBUG there when a tool misbehaves.",
+    "",
     "Without uv, point command at the venv interpreter instead:",
     "  \"command\": \"/ABSOLUTE/PATH/TO/Foundry-week-1/.venv/bin/python\",",
     "  \"args\": [\"-m\", \"foundry_spike_mcp\", \"serve\"]"

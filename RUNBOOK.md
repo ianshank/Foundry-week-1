@@ -142,16 +142,16 @@ verifier row states which models laundered a failure into a pass.
 MCP server." So this wrapper lives in the spike directory, not in the tool's
 repo, and it stays a subprocess caller — no imports of `openspec_graph`
 internals. That constraint is enforced by
-`mcp/tests/test_seam_is_closed.py`, not by memory.
+`mcp_server/tests/test_seam_is_closed.py`, not by memory.
 
-**3.1** **[amended — already built]** The scaffold exists at `mcp/`. Agent
+**3.1** **[amended — already built]** The scaffold exists at `mcp_server/`. Agent
 Builder's **MCP Workflow → Create New MCP Server → Python** generates a sample
 tool you would then delete; skip it and register what is here.
 
 **3.2** Tool contract. The whole point is that the three-way exit code
 survives the trip into a language model. Do not return a boolean.
 
-Implementation: `mcp/src/foundry_spike_mcp/planlint.py`.
+Implementation: `mcp_server/src/foundry_spike_mcp/planlint.py`.
 
 **[amended — the draft's sample would not run]** Three defects, all of which
 land on the exit-2 path the step's own "done when" requires:
@@ -182,7 +182,7 @@ preserving the harness's three-valued convention where a trajectory scorer with
 no trajectory yields `passed=None` and is excluded from `pass_rate`.
 Collapsing `null` into `false` fabricates failures; into `true`, passes.
 
-Implementation: `mcp/src/foundry_spike_mcp/scoring.py`.
+Implementation: `mcp_server/src/foundry_spike_mcp/scoring.py`.
 
 **[amended]** Two additions the draft did not specify:
 
@@ -199,7 +199,7 @@ found it. Pin the real shape in session 3 against a real artifact and narrow
 the walk. An unrecognised artifact returns BLOCKED, never an empty pass.
 
 **3.4** Refusals baked into the server, not the prompt —
-`mcp/src/foundry_spike_mcp/guards.py`:
+`mcp_server/src/foundry_spike_mcp/guards.py`:
 
 - No verb outside `detect`, `validate`, `graph`, `rules`, `waivers`, `delta`.
 - No `--force`, no writes, no `make`.
@@ -218,7 +218,7 @@ to treat MCP tool descriptions and results as untrusted input; the same
 applies in reverse to arguments arriving from a model.
 
 **3.5** Register and debug: **Tool → + MCP Server → Connect to an Existing MCP
-Server → Command (stdio)**. Command and args are in `mcp/mcp.json.example`.
+Server → Command (stdio)**. Command and args are in `mcp_server/mcp.json.example`.
 Or press **F5** / **Debug in Agent Builder**. If env vars are needed the
 Toolkit fails on tool-add and opens `mcp.json` for you to fill in — expect that
 step rather than treating it as a bug. (`mcp.json` is gitignored: it will hold
@@ -228,9 +228,21 @@ real paths and possibly a token.)
 for a PASS case, a FINDINGS case, and a deliberately BLOCKED case.
 
 ```bash
-make test        # contract suite + server smoke test, no network, no planlint needed
+make validate    # ruff, mypy, the full suite, the secret pass
 make selfcheck   # all three verdicts against the real planlint -> evidence/03-mcp-selfcheck.json
 ```
+
+**[amended]** Configuration and policy are separated. `config.py` reads the
+environment for paths, timeouts and the severity vocabulary; `guards.py` holds
+the verb allow list, the flag deny list and the credential patterns and reads
+nothing. Widening what the tool may execute takes a code change, a review and a
+test -- which is the point.
+
+**[amended]** Logging goes to **stderr**, never stdout. An MCP stdio server
+frames JSON-RPC on stdout, and a stray line there makes the tool disappear from
+Agent Builder with no useful error. Set `FOUNDRY_SPIKE_LOG_LEVEL=DEBUG` when a
+tool misbehaves inside the Toolkit and there is no other window into it;
+`FOUNDRY_SPIKE_LOG_FORMAT=json` when the output is going into evidence.
 
 ---
 
@@ -266,6 +278,11 @@ more model adapter behind Mango's existing interface. Park it in
 **Done when:** four conversations saved, at least one trace showing a
 `BLOCKED` or refused call, and one code snippet parked in the spike repo.
 
+**[amended]** Promote each capture before citing it:
+`make promote RUN_DIR=traces/raw/<dir>`. It runs the secret pass and refuses to
+copy anything with a hit. `traces/raw/` is gitignored, so an un-promoted capture
+is not in the repository and a matrix cell pointing at one dead-ends.
+
 ---
 
 ## Step 5 — Write the verdict before you close the week
@@ -300,7 +317,7 @@ BLOCKED is ordinary robustness — it is what makes exit-2 semantics *work*.
 Condition 2 fires when BLOCKED can only be produced by reading planlint's
 stderr strings, pattern-matching its human-readable messages, or anything else
 that would break on its next release. Condition 3 has a test:
-`mcp/tests/test_seam_is_closed.py` fails if the wrapper starts importing what
+`mcp_server/tests/test_seam_is_closed.py` fails if the wrapper starts importing what
 it is supposed to be calling.
 
 ---
