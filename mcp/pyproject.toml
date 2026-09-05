@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Read-only MCP tools over planlint and the eval-harness sink (Foundry Toolkit week-1 spike)"
 requires-python = ">=3.10"
 dependencies = [
-    "mcp>=1.2.0",
+    # Upper bound is deliberate. `mcp>=1.2.0` floated to 2.x, where FastMCP was
+    # renamed MCPServer, and the server stopped importing on any fresh install.
+    # `server.py` targets the 2.x API; raise this bound only alongside a
+    # `test_server_smoke.py` run against the new major.
+    "mcp>=2.1,<3",
 ]
 
 [project.optional-dependencies]

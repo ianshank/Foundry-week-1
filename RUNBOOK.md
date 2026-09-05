@@ -228,7 +228,7 @@ real paths and possibly a token.)
 for a PASS case, a FINDINGS case, and a deliberately BLOCKED case.
 
 ```bash
-make test        # 90 tests, no network, no planlint needed
+make test        # contract suite + server smoke test, no network, no planlint needed
 make selfcheck   # all three verdicts against the real planlint -> evidence/03-mcp-selfcheck.json
 ```
 

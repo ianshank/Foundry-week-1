@@ -47,7 +47,15 @@ from .verdicts import (
 _NAME_KEYS = ("scorer", "scorer_name", "name", "scorer_id", "id")
 
 #: Keys that may hold the three-valued verdict.
-_PASSED_KEYS = ("passed", "pass", "result")
+#:
+#: `result` used to be here and had to go. It is a common *summary* key, so an
+#: artifact like ``{"result": "pass", "scorers": [{"name": "t", "passed": null}]}``
+#: produced a phantom scorer with ``passed=True`` at the document root -- which
+#: flipped a run that should have been BLOCKED / no_scored_results into PASS
+#: with ``pass_rate: 1.0``. That is precisely the fabrication this module's
+#: docstring forbids, arriving through the shape-tolerant walk instead of
+#: through a coercion.
+_PASSED_KEYS = ("passed", "pass")
 
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 
@@ -115,38 +123,79 @@ def _normalise_passed(value: Any) -> bool | None | str:
     return f"unreadable:{value!r}"
 
 
-def _collect_scorers(node: Any, path: str = "$", out: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def _collect_scorers(
+    node: Any,
+    path: str = "$",
+    label: str | None = None,
+    out: list[dict[str, Any]] | None = None,
+    ignored: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Walk the artifact for objects that carry a scorer verdict.
 
     Shape-agnostic on purpose: the exact `json_file` sink layout is pinned in
     session 3 against a real artifact, and an adapter written from a guess
     would silently mis-read a shape it half-matched. This finds any object with
     a recognised verdict key and records where it was found, so a wrong guess
-    shows up as an odd `path` in the output rather than as a wrong number.
+    shows up as an odd `source_path` in the output rather than as a wrong
+    number.
+
+    Two rules keep tolerance from becoming invention:
+
+    * A verdict-carrying object must be *nameable* -- either an explicit name
+      key, or the key it hangs off (``$.scorers.exit_fidelity`` -> the scorer
+      ``exit_fidelity``). An object that is nameable by neither is a summary
+      field wearing a scorer's clothes.
+    * The document root is only a scorer when it names itself. Otherwise a
+      top-level verdict field would be counted alongside the real scorers,
+      which is how a null-only run turned into a pass.
+
+    Returns ``(scorers, ignored)``. Refusals are returned rather than dropped:
+    a scorer this wrapper declined to count is exactly the thing session 3
+    needs to see while pinning the real schema.
     """
     if out is None:
         out = []
+    if ignored is None:
+        ignored = []
     if isinstance(node, dict):
         verdict_key = next((key for key in _PASSED_KEYS if key in node), None)
         if verdict_key is not None:
-            name = next(
+            explicit = next(
                 (str(node[key]) for key in _NAME_KEYS if key in node and node[key] is not None),
                 None,
             )
-            out.append(
-                {
-                    "scorer": name or f"<unnamed@{path}>",
-                    "passed": _normalise_passed(node[verdict_key]),
-                    "source_path": path,
-                    "detail": node.get("reason") or node.get("message") or node.get("detail"),
-                }
-            )
+            name = explicit or label
+            if name is None:
+                ignored.append(
+                    {
+                        "source_path": path,
+                        "verdict_key": verdict_key,
+                        "why": (
+                            "an unnamed verdict field at the document root is a summary, "
+                            "not a scorer; counting it would fabricate a result"
+                        ),
+                    }
+                )
+            else:
+                out.append(
+                    {
+                        "scorer": name,
+                        "passed": _normalise_passed(node[verdict_key]),
+                        "source_path": path,
+                        "named_by": "field" if explicit else "path",
+                        "detail": node.get("reason") or node.get("message") or node.get("detail"),
+                    }
+                )
         for key, value in node.items():
-            _collect_scorers(value, f"{path}.{key}", out)
+            _collect_scorers(value, f"{path}.{key}", key, out, ignored)
     elif isinstance(node, list):
         for index, value in enumerate(node):
-            _collect_scorers(value, f"{path}[{index}]", out)
-    return out
+            # A list element is always nameable by position, so a bare array of
+            # unnamed records still reports. The one thing that stays refused is
+            # an unnamed verdict field on the root object -- the actual defect.
+            child_label = f"{label}[{index}]" if label else f"[{index}]"
+            _collect_scorers(value, f"{path}[{index}]", child_label, out, ignored)
+    return out, ignored
 
 
 def _aggregate(scorers: list[dict[str, Any]]) -> tuple[float | None, dict[str, int]]:
@@ -247,14 +296,23 @@ def score_run(run_id: str, artifact_path: str | None = None) -> dict[str, Any]:
             artifact=str(resolved),
         )
 
-    scorers = _collect_scorers(document)
+    scorers, ignored = _collect_scorers(document)
     if not scorers:
+        detail = (
+            "no object in the artifact carried a recognised verdict key "
+            f"({', '.join(_PASSED_KEYS)}); pin the real sink schema before trusting this tool"
+        )
+        if ignored:
+            detail += (
+                f"; {len(ignored)} verdict field(s) were refused as unnameable: "
+                + ", ".join(entry["source_path"] for entry in ignored[:5])
+            )
         return _blocked(
             BLOCKED_ARTIFACT_SCHEMA,
-            "no object in the artifact carried a recognised verdict key "
-            f"({', '.join(_PASSED_KEYS)}); pin the real sink schema before trusting this tool",
+            detail,
             run_id=run_id,
             artifact=str(resolved),
+            ignored=ignored,
         )
 
     pass_rate, counts = _aggregate(scorers)
@@ -278,6 +336,7 @@ def score_run(run_id: str, artifact_path: str | None = None) -> dict[str, Any]:
         "run_id": run_id,
         "artifact": str(resolved),
         "scorers": scorers,
+        "ignored": ignored,
         "pass_rate": pass_rate,
         "counts": counts,
         "contract": {

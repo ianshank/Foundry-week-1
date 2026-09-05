@@ -40,7 +40,7 @@ cp .env.example .env && $EDITOR .env      # paths + guard rails
 set -a; source .env; set +a
 
 make setup      # venv + the MCP server, editable
-make test       # 90 tests. No network, no planlint, no MCP SDK needed.
+make test       # contract suite. No network, no planlint, no MCP SDK needed.
 make baseline   # session 1: version stamp, dialect card, baseline exit codes
 ```
 
@@ -67,8 +67,10 @@ snippets/                   step 4.5 adapter candidate, parked and unmerged
 
 **Built and tested:** both MCP tools, their refusals, the three-valued
 contract, the stdio server, the evidence templates, and a headless verifier
-probe. `make test` proves the tool half of the contract with no external
-dependencies at all.
+probe. `make test` proves the verdict logic with no external dependencies at
+all, and — once `make setup` has installed the SDK — starts the server and
+checks both tools register. CI runs those as separate jobs, because a suite
+that needs nothing installed cannot tell you whether the transport works.
 
 **Not built, because it cannot be:** every judgement call. Loading four models,
 reading four Playground cells, deciding which model laundered a failure,

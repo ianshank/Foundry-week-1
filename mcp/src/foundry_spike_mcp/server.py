@@ -4,6 +4,16 @@ Deliberately thin. All behaviour lives in `planlint` and `scoring`, which
 import nothing from the MCP SDK -- so the contract under test is testable
 without a server, and swapping transports later cannot change a verdict.
 
+That separation earned its keep and then cost something: because the tool
+tests need no SDK, the first version of this file was never imported by
+anything, and it shipped importing `mcp.server.fastmcp`, which does not exist
+in the SDK a fresh `pip install` resolves to. `FastMCP` was renamed
+`MCPServer` in mcp 2.0. `test_server_smoke.py` now builds this server and
+lists its tools, so the transport cannot rot unnoticed again.
+
+The dependency is pinned `>=2.1,<3`: an open upper bound is what turned a
+rename in someone else's major version into a broken deliverable here.
+
 Register in Agent Builder via
     Tool -> + MCP Server -> Connect to an Existing MCP Server -> Command (stdio)
 with command `uv` and args `run --directory <repo>/mcp foundry-spike-mcp`,
@@ -21,14 +31,14 @@ from .scoring import score_run as _score_run
 
 
 def build_server() -> Any:
-    """Construct the FastMCP server.
+    """Construct the MCP server and register both tools.
 
     The SDK import is local so that `pytest` can exercise the tool contract
     with no third-party dependency installed.
     """
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
-    server = FastMCP("foundry-spike")
+    server = MCPServer("foundry-spike")
 
     @server.tool()
     def lint_openspec(target: str | None = None, fail_on: str = "ERROR") -> dict[str, Any]:

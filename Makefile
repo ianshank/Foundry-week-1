@@ -30,7 +30,7 @@ setup: ## Install the MCP server and dev deps into a local venv (session 0)
 baseline: ## Runbook step 0.4-0.5: version stamp, dialect card, baseline exit codes
 	bash scripts/00-baseline.sh
 
-test: ## Run the tool-contract suite (90 tests, no network, no planlint needed)
+test: ## Run the contract suite (no network or planlint; server smoke test needs `make setup` first)
 	$(PYTEST)
 
 selfcheck: ## Runbook step 3 done-when: prove PASS / FINDINGS / BLOCKED all land
