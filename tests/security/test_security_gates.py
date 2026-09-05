@@ -12,7 +12,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore[assignment]
 
 from foundry_spike_mcp.guards import (
     DENIED_FLAGS,
@@ -98,6 +105,8 @@ def test_security_secret_redaction(raw_secret: str, expected_tag: str):
 
 def test_security_gitleaks_toml_validity():
     """Verify that .gitleaks.toml exists, parses cleanly, and defines required rules."""
+    if tomllib is None:
+        pytest.skip("Neither tomllib nor tomli is available on this interpreter")
     gitleaks_file = REPO_ROOT / ".gitleaks.toml"
     assert gitleaks_file.exists(), ".gitleaks.toml configuration must exist"
 
