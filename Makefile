@@ -17,7 +17,7 @@ RUN := PYTHONPATH=$(SRC) $(PY)
 
 .DEFAULT_GOAL := help
 .PHONY: help setup hooks baseline test regression lint typecheck scan validate \
-        selfcheck serve probe probe-blocked promote verdict \
+        coverage selfcheck serve probe probe-blocked promote verdict \
         docker-test docker-transport docker-lint clean
 
 help: ## Show this help
@@ -56,10 +56,14 @@ test: ## The full suite (contract + smoke; smoke skips without the SDK)
 regression: ## The suite with the SDK required -- what CI's transport job runs
 	REQUIRE_MCP=1 $(PYTEST)
 
+coverage: ## Run the suite under coverage and enforce the floor
+	$(PY) -m coverage run -m pytest -q
+	$(PY) -m coverage report
+
 scan: ## Credential pass over evidence/ traces/ snippets/ configs/ decisions/
 	$(PY) scripts/scan_evidence.py
 
-validate: lint typecheck test scan ## Everything, in order, stopping at the first failure
+validate: lint typecheck coverage scan ## Everything, in order, stopping at the first failure
 	@bash -n scripts/00-baseline.sh .githooks/pre-commit .claude/hooks/check-edited-file.sh
 	@echo
 	@echo "All checks passed. Safe to open a PR."

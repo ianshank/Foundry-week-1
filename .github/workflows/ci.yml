@@ -80,13 +80,21 @@ jobs:
           python-version: "3.12"
 
       - name: Install linters
-        run: python -m pip install --upgrade pip ruff mypy
+        run: python -m pip install --upgrade pip ruff mypy coverage pytest
 
       - name: ruff
         run: ruff check --output-format=github .
 
       - name: mypy
         run: mypy
+
+      - name: Coverage floor
+        # Measured here rather than in `contract`, whose whole value is running
+        # with nothing installed. The floor stops 91% from rotting; it does not
+        # claim the tests are good, only that they still exist.
+        run: |
+          python -m coverage run -m pytest -q
+          python -m coverage report
 
   secrets:
     name: secrets

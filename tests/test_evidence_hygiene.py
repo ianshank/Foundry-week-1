@@ -171,3 +171,86 @@ def test_every_allowlisted_path_still_exists():
 def test_the_default_ruleset_is_extended_not_replaced():
     config = _load_gitleaks_config()
     assert config["extend"]["useDefault"] is True
+
+
+def test_no_gitleaks_pattern_uses_a_construct_re2_rejects():
+    """gitleaks compiles with Go's RE2, which has no lookarounds or
+    backreferences -- and it does not degrade gracefully: an unsupported
+    construct **panics at config load**, so the job dies before scanning
+    anything and reports as a scan failure rather than a config error.
+
+    This test exists because `(?!user\\b)` shipped in a rule and took CI down
+    exactly that way. Writing a Python-flavoured regex into a Go tool's config
+    is a mistake that will recur; this makes it fail locally in milliseconds
+    instead of in CI after a push.
+    """
+    import re
+
+    config = _load_gitleaks_config()
+    patterns: list[tuple[str, str]] = []
+    for rule in config.get("rules", []):
+        for key in ("regex", "path"):
+            if key in rule:
+                patterns.append((f"rule {rule['id']}.{key}", rule[key]))
+    for key in ("paths", "regexes"):
+        for index, pattern in enumerate(config.get("allowlist", {}).get(key, [])):
+            patterns.append((f"allowlist.{key}[{index}]", pattern))
+    assert patterns, "no patterns found to check"
+
+    # Constructs RE2 does not implement, with the reason spelled out so a
+    # failure explains itself rather than just naming a symbol.
+    unsupported = {
+        r"(?=": "positive lookahead",
+        r"(?!": "negative lookahead",
+        r"(?<=": "positive lookbehind",
+        r"(?<!": "negative lookbehind",
+        r"(?>": "atomic group",
+    }
+    backreference = re.compile(r"\\[1-9]")
+
+    offenders = []
+    for where, pattern in patterns:
+        for construct, name in unsupported.items():
+            if construct in pattern:
+                offenders.append(f"{where}: {name} `{construct}` -- RE2 has none")
+        if backreference.search(pattern):
+            offenders.append(f"{where}: backreference -- RE2 has none")
+    assert not offenders, "\n".join(offenders)
+
+
+def test_every_gitleaks_pattern_compiles():
+    """A weaker but broader check than the RE2 one: catch plain syntax errors
+    too. Python's engine is a superset, so passing here is necessary, not
+    sufficient -- which is why the RE2 check above exists as well."""
+    import re
+
+    config = _load_gitleaks_config()
+    for rule in config.get("rules", []):
+        if "regex" in rule:
+            re.compile(rule["regex"])
+    for key in ("paths", "regexes"):
+        for pattern in config.get("allowlist", {}).get(key, []):
+            re.compile(pattern)
+
+
+def test_the_custom_rule_actually_matches_a_developer_path():
+    """A detection rule that never fires is worse than no rule: it reads as
+    coverage. These are the shapes it exists to catch."""
+    import re
+
+    config = _load_gitleaks_config()
+    rule = next(r for r in config["rules"] if r["id"] == "developer-home-path")
+    pattern = re.compile(rule["regex"])
+    for leaky in (
+        'PLANLINT_TARGET="/Users/jsmith/src/Agents"',
+        "AGENTS_REPO=/home/jsmith/work/Agents",
+        r'SPIKE_HOME="C:\Users\jsmith\spikes"',
+        "EVAL_ALLOWED_ROOTS=/Users/jsmith/.eval-runs",
+    ):
+        assert pattern.search(leaky), f"missed: {leaky}"
+    for portable in (
+        'PLANLINT_TARGET="$HOME/src/Agents"',
+        'EVAL_SINK_DIR="${AGENTS_REPO}/.eval-runs"',
+        "SPIKE_HOME=./spikes",
+    ):
+        assert not pattern.search(portable), f"false positive: {portable}"

@@ -17,6 +17,7 @@ but do not let the scaffolding become the work. The deliverable is
 
 | # | Action | Why now |
 |---|---|---|
+| 0 | **Add a LICENSE, or make the repo private.** | A public repository with no licence file is all-rights-reserved by default: nobody may legally reuse it, including a future you on another team. Which licence is your call, not one I should make. |
 | 1 | **Decide whether this repo stays public.** | It is public today and will accumulate planlint findings with real spec paths, pasted OpenSpec proposals, MCTS node dumps and model transcripts — from source repos that are private. One click; do it before the first capture, not after. |
 | 2 | `cp .env.example .env` and fill it in | Nothing runs without `PLANLINT_TARGET` and an allow list. Both fail closed. |
 | 3 | `make setup && make test` | Confirms the floor works on your machine before a session is on the clock. |
@@ -44,6 +45,9 @@ and this branch closes most of them. What is left:
 | — | `_selfcheck` widens its own `PLANLINT_ALLOWED_ROOTS` | **open**. Justified (the temp dir is tool-created, not model-supplied) but it is still the tool relaxing its own guard to make a demo pass — the exact shape step 5 asks about. Should become an explicit parameter. |
 | — | `traces/` has no index or template | **open**. `agent-probes.md` says what to record; nothing structures where. Four saved conversations with no index cannot be diffed. |
 | — | No session tracker | **open**. A five-session time-boxed spike with no per-session done-when checklist. The likeliest way the week overruns quietly. |
+| — | GitHub Actions on floating major tags | **open, accepted**. `@v4`/`@v5`/`@v2` rather than SHAs. Bounded by `contents: read` and no secrets; dependabot makes updates reviewable. SHA-pin before copying this workflow anywhere with write permissions. |
+| — | No dependency lockfile | **open, accepted**. One direct dependency bounded `>=1.2,<3`, but transitives resolve fresh every CI run, so a transitive break shows up as an unexplained red rather than a diff. A lockfile is the fix; the maintenance cost is real for a five-session spike. |
+| — | TOCTOU between `check_target` and the subprocess | **open, accepted**. Documented in `SECURITY.md`. Closing it needs an fd-based API planlint does not offer. |
 
 ---
 

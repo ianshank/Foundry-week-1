@@ -56,6 +56,7 @@ Branches: `main` (base), `Dev`, `QA`, and feature branches off `main`.
 ```
 RUNBOOK.md                  the procedure, with the draft's defects marked [amended]
 NEXT_STEPS.md               what to do before session 1, and what is still open
+SECURITY.md                 threat model, per-surface controls, known limitations
 CHANGELOG.md                what changed and why, where the diff does not say
 docs/architecture/C4.md     context / container / component views + verdict flow
 

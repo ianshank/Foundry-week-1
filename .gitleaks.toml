@@ -14,9 +14,15 @@ title = "Foundry week-1 spike"
 useDefault = true
 
 [[rules]]
-id = "planlint-target-absolute-path"
-description = "An absolute developer path leaks the machine layout and sometimes a username"
-regex = '''(?i)(PLANLINT_TARGET|AGENTS_REPO|EVAL_SINK_DIR|SPIKE_HOME)\s*=\s*["']?(/Users/|/home/(?!user\b)|C:\\Users\\)[^"'\s]+'''
+id = "developer-home-path"
+description = "An absolute developer path leaks the machine layout and usually a username"
+# RE2, not PCRE. gitleaks compiles rules with Go's RE2 engine, which has no
+# lookahead or lookbehind -- an earlier version of this rule used `(?!user\b)`
+# to carve out a generic path and gitleaks *panicked at config load*, taking
+# the whole job down before it scanned anything. Exclusions belong in the
+# allowlist below, which is the RE2-idiomatic place for them.
+# `tests/test_evidence_hygiene.py` now rejects lookarounds in this file.
+regex = '''(?i)(PLANLINT_TARGET|PLANLINT_ALLOWED_ROOTS|AGENTS_REPO|EVAL_SINK_DIR|EVAL_ALLOWED_ROOTS|SPIKE_HOME)\s*=\s*["']?(/Users/|/home/|C:\\Users\\)[^"'\s]+'''
 tags = ["path", "pii"]
 
 [allowlist]

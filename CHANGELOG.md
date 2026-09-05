@@ -9,7 +9,36 @@ to lose by accident.
 
 ## [Unreleased]
 
+### Fixed (final hardening scan)
+
+- **gitleaks panicked at config load and took CI red.** The custom rule used
+  `(?!user\b)` -- a negative lookahead. gitleaks compiles with Go's RE2, which
+  has no lookarounds, and it does not degrade gracefully: it panics before
+  scanning anything, then the action fails again trying to upload a SARIF that
+  was never produced. Rewritten without lookarounds, verified against the real
+  `gitleaks` binary (3 test vectors detected, 3 portable forms not), and
+  `test_evidence_hygiene.py` now rejects RE2-incompatible constructs in that
+  file so the class of bug cannot recur.
+- **Coverage was never measured.** First run put it at 76%, with every CLI
+  entry point at or near zero -- `__main__.py` 0%, `scan_evidence` 48%,
+  `verifier_probe` 57%. The library functions were well covered; the commands
+  operators and CI actually invoke were not, which made the earlier "finding #6
+  fixed" claim weaker than stated. `tests/test_cli_entrypoints.py` covers all
+  four `main()` functions including exit codes. Now **91%** with branch
+  coverage, floored at 85 in CI.
+
 ### Added
+
+- `SECURITY.md` -- threat model (the adversary is a model-supplied argument,
+  not a network attacker), the control for each surface, and the known
+  limitations stated rather than left to be discovered: TOCTOU on path
+  validation, floating Action tags, unpinned transitives, no LICENSE, public
+  repository.
+- `.github/CODEOWNERS` and `.github/dependabot.yml`. Dependabot exists mainly
+  for `github-actions`: the workflow uses floating major tags, so a compromised
+  tag would run in CI with no diff to review. Major bumps of `mcp` are ignored
+  on purpose -- 1.x to 2.x already cost a broken server under green CI.
+- Coverage gate in CI and `make coverage`; `make validate` now includes it.
 
 - **Base branches** `main`, `Dev`, `QA`, all at the scaffold commit. The
   repository was created empty, so GitHub had made the working branch the
