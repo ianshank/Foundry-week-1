@@ -164,9 +164,17 @@ def _read_findings(
     if not stdout.strip():
         return None, None, None, False
 
-    # Measured on the raw stream. Parsing first to find out whether the result
-    # is too big to keep is exactly the memory exhaustion this prevents.
-    if len(stdout) > config.findings_max_bytes:
+    # Measured on the raw stream, before `json.loads`. Parsing first to find
+    # out whether the result is too big to keep is exactly the memory
+    # exhaustion this prevents.
+    #
+    # In bytes, because the setting is named in bytes. `stdout` arrives already
+    # decoded, so `len` would count code points: 100k CJK characters are 300k
+    # UTF-8 bytes and slipped a 256 KiB ceiling entirely. Encoding to measure
+    # costs a transient copy of a string subprocess decoded from bytes moments
+    # ago, so it adds nothing to the peak this function has already seen.
+    size = len(stdout.encode("utf-8", errors="replace"))
+    if size > config.findings_max_bytes:
         _log.warning(
             "planlint stdout over the findings limit; evidence truncated, verdict unaffected",
             extra={"tool": "planlint"},
@@ -174,7 +182,7 @@ def _read_findings(
         return (
             None,
             (
-                f"stdout is {len(stdout)} bytes, over the "
+                f"stdout is {size} bytes, over the "
                 f"{config.findings_max_bytes} byte findings limit"
             ),
             guards.clean(stdout, config.stdout_limit),

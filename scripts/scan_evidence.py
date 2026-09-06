@@ -10,8 +10,13 @@ in the script nobody reads.
 Scans `evidence/` and `traces/` by default. Exits nonzero on any hit, so it
 can sit in a pre-commit hook or in CI without further wiring.
 
+Positional targets are resolved against the repository root, so a relative
+name means "in this repo" and an absolute path means exactly itself -- you can
+point the gate at a staging directory outside the tree before exporting it.
+
     python3 scripts/scan_evidence.py
     python3 scripts/scan_evidence.py evidence traces/raw
+    python3 scripts/scan_evidence.py /tmp/export-for-review
 """
 
 from __future__ import annotations
@@ -32,6 +37,20 @@ from foundry_spike_mcp.guards import SECRET_PATTERNS  # noqa: E402
 DEFAULT_TARGETS = ("evidence", "traces", "snippets", "configs", "decisions")
 SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".gz", ".webp"}
 MAX_BYTES = 16 * 1024 * 1024
+
+
+def display(path: Path) -> str:
+    """Render a path for the operator: relative inside the repo, absolute outside.
+
+    `Path.relative_to` raises for a path that is not under `REPO`, and this
+    script advertises positional targets. Pointing the gate at a staging
+    directory before exporting it -- the one use that most needs a gate -- ended
+    in a traceback rather than a scan.
+    """
+    try:
+        return str(path.relative_to(REPO))
+    except ValueError:
+        return str(path)
 
 
 def scan_file(path: Path) -> list[tuple[int, str, str]]:
@@ -60,7 +79,7 @@ def main(argv: list[str]) -> int:
 
     for target in targets:
         if not target.exists():
-            print(f"skip  {target.relative_to(REPO)} (does not exist)")
+            print(f"skip  {display(target)} (does not exist)")
             continue
         paths = [target] if target.is_file() else sorted(p for p in target.rglob("*") if p.is_file())
         for path in paths:
@@ -69,7 +88,7 @@ def main(argv: list[str]) -> int:
             scanned += 1
             for number, kind, pattern in scan_file(path):
                 findings += 1
-                where = f"{path.relative_to(REPO)}:{number}" if number else str(path.relative_to(REPO))
+                where = f"{display(path)}:{number}" if number else display(path)
                 print(f"HIT   {where}  [{kind}]  /{pattern}/")
 
     print(f"\nscanned {scanned} file(s), {findings} hit(s)")

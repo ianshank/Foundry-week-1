@@ -18,13 +18,20 @@ import os
 
 import pytest
 
-# Probe the submodule, not the top-level name. This repo has its own `mcp/`
-# directory, so with the repo root on sys.path `import mcp` succeeds even with
-# no SDK installed -- it resolves to an empty namespace package. (At runtime a
-# real installed package outranks a namespace portion, so the server itself is
-# unaffected; only a bare `import mcp` guard is fooled.) `importorskip("mcp")`
-# therefore never skipped, and the suite errored instead.
-_SDK = "mcp.server.mcpserver"
+# Probe the package, not one major's submodule.
+#
+# This guard used to name `mcp.server.mcpserver`, which exists only in 2.x. The
+# stated reason was that the repo's own `mcp/` directory made a bare
+# `import mcp` succeed as an empty namespace package even with no SDK
+# installed, so `importorskip("mcp")` never skipped. That directory was renamed
+# to `mcp_server/`, and the workaround outlived the hazard: on the declared
+# floor of 1.2 the submodule does not exist, so this file errored during
+# collection under REQUIRE_MCP and skipped silently without it. A floor that
+# cannot run its own smoke suite is not a supported version.
+#
+# `test_the_sdk_is_a_real_package_not_a_namespace_shim` below re-asserts the
+# original hazard directly, so probing the package name stays safe.
+_SDK = "mcp"
 
 # Locally the SDK is optional -- `make test` before `make setup` should still
 # run the contract suite. In CI it is mandatory, because a skip that can
@@ -89,6 +96,21 @@ def test_descriptions_carry_the_authority_boundary(tool_name, phrase):
 # installed one for real, the other through a stub. A compat path that is
 # never exercised is a compat path that does not work.
 # --------------------------------------------------------------------------
+
+
+def test_the_sdk_is_a_real_package_not_a_namespace_shim():
+    """The hazard the old submodule probe was working around, asserted directly.
+
+    If a directory named `mcp/` ever reappears at the repo root, `import mcp`
+    resolves to an empty namespace package, every skip above becomes hollow and
+    this file certifies nothing. A namespace package has no `__file__`.
+    """
+    import mcp
+
+    assert getattr(mcp, "__file__", None) is not None, (
+        "`mcp` resolved to a namespace package, so the SDK guard is hollow. "
+        "Something at the repo root is shadowing the installed SDK."
+    )
 
 
 def test_loader_reports_which_sdk_major_it_found():

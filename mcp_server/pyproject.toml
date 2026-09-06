@@ -15,8 +15,16 @@ dependencies = [
 [project.optional-dependencies]
 # The tool contract is tested without the MCP SDK on purpose: `planlint` and
 # `scoring` import nothing from it, so a transport change cannot alter a verdict.
+#
+# Everything `make validate` runs belongs here. It previously held pytest
+# alone, so `make setup && make validate` was red on a fresh clone at the first
+# of three steps -- CI installs the linters separately and never noticed. The
+# floor for a contributor and the floor for CI should be the same floor.
 dev = [
     "pytest>=8.0",
+    "coverage>=7.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
 ]
 
 [project.scripts]

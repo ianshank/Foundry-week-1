@@ -264,10 +264,23 @@ def redact_structure(value: Any, max_depth: int) -> tuple[Any, bool]:
                 continue
             branch: dict[Any, Any] = {}
             parent[key] = branch
+            # Keys are redacted too: a credential is as likely to appear as a
+            # key in a map of secrets as it is in a value. That introduces a
+            # collision this loop has to handle -- two *different* credentials
+            # redact to the same marker, and the second would otherwise
+            # overwrite the first, dropping evidence silently in the exact code
+            # path this function exists to defend. Allocation happens here,
+            # eagerly, because assignment into `branch` is deferred until the
+            # child is popped and a check at that point would race.
+            taken: set[Any] = set()
             for child_key, child in node.items():
-                # Keys are redacted too. A credential is as likely to appear as
-                # a key in a map of secrets as it is in a value.
                 safe_key = redact(child_key) if isinstance(child_key, str) else child_key
+                if safe_key in taken:
+                    ordinal = 2
+                    while f"{safe_key}#{ordinal}" in taken:
+                        ordinal += 1
+                    safe_key = f"{safe_key}#{ordinal}"
+                taken.add(safe_key)
                 stack.append((child, branch, safe_key, depth + 1))
         elif isinstance(node, list):
             if depth >= max_depth:

@@ -297,3 +297,27 @@ def test_an_argv_with_no_verb_at_all_is_refused():
     with pytest.raises(guards.GuardRejection) as caught:
         guards.assert_safe_argv(["planlint", "--target", "/srv/specs"])
     assert caught.value.reason == "no_verb"
+
+
+def test_two_different_credentials_as_keys_both_survive_redaction():
+    """Contract review finding. Both keys redact to the same marker, so the
+    second silently overwrote the first -- evidence lost with no exception and
+    no note, in the exact code path this function exists to defend."""
+    other = "ghp_" + "E" * 36
+    out, _ = guards.redact_structure({TOKEN: "first", other: "second"}, max_depth=16)
+    assert sorted(out.values()) == ["first", "second"]
+    assert TOKEN not in str(out)
+    assert other not in str(out)
+
+
+def test_a_key_collision_is_disambiguated_deterministically():
+    payload = {"ghp_" + letter * 36: index for index, letter in enumerate("FGH")}
+    first, _ = guards.redact_structure(payload, max_depth=16)
+    second, _ = guards.redact_structure(payload, max_depth=16)
+    assert len(first) == 3
+    assert first == second
+
+
+def test_a_key_that_needs_no_redaction_is_untouched():
+    out, _ = guards.redact_structure({"rule": "SPEC001", "line": 4}, max_depth=16)
+    assert out == {"rule": "SPEC001", "line": 4}

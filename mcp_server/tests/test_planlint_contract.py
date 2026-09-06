@@ -449,3 +449,25 @@ def test_detect_dialect_refuses_a_target_outside_the_allow_list(fake_planlint, c
     result = detect_dialect(target="/etc")
     assert result["verdict"] == BLOCKED
     assert result["blocked_reason"] == BLOCKED_GUARD_REJECTED
+
+
+def test_the_findings_ceiling_is_measured_in_bytes_not_characters(fake_planlint, configured):
+    """Contract review finding. `stdout` arrives decoded, so a character count
+    let a multi-byte payload through a ceiling named in bytes: 100 CJK
+    characters are 300 UTF-8 bytes."""
+    payload = json.dumps({"m": "漢" * 100}, ensure_ascii=False)
+    assert len(payload) < 200 < len(payload.encode("utf-8"))
+    configured(fake_planlint(exit_code=1, stdout=payload))
+    result = lint_openspec(config=replace(load_planlint_config(), findings_max_bytes=200))
+    assert result["findings_truncated"] is True
+    assert result["verdict"] == FINDINGS
+    # And the reported size is the byte count, matching the setting's units.
+    assert f"{len(payload.encode('utf-8'))} bytes" in result["findings_parse_error"]
+
+
+def test_a_multibyte_payload_under_the_ceiling_still_parses(fake_planlint, configured):
+    payload = json.dumps({"m": "漢" * 10}, ensure_ascii=False)
+    configured(fake_planlint(exit_code=1, stdout=payload))
+    result = lint_openspec(config=replace(load_planlint_config(), findings_max_bytes=4096))
+    assert result["findings_truncated"] is False
+    assert result["findings"] == {"m": "漢" * 10}
