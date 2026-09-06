@@ -401,8 +401,12 @@ def score_run(
     try:
         scorers, ignored = _collect_scorers(document)
     except RecursionError:
-        # The walk is recursive too. A document deep enough to parse but too
-        # deep to walk is still "could not read it", never an empty pass.
+        # Kept, and no longer for the reason it was added. It used to guard the
+        # shape-tolerant recursive walk, which the pinned schema removed -- but
+        # `_collect_scorers` still stringifies artifact values it did not write
+        # (`str(item[key])` for a name), and `dict.__repr__` recurses. A
+        # document deep enough to parse but not to render is still "could not
+        # read it", never an empty pass.
         return _blocked(
             BLOCKED_ARTIFACT_UNREADABLE,
             "artifact nests deeper than the walk can follow",

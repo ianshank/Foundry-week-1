@@ -350,19 +350,26 @@ def test_an_unreadable_file_is_blocked_never_raised(sink, monkeypatch):
 
 
 def test_a_document_too_deep_to_read_is_blocked_never_an_empty_pass(sink):
-    """Deep nesting is BLOCKED whichever stack runs out first.
+    """Deep nesting is BLOCKED whichever way this document is refused.
 
-    There are two depth limits here and which one trips is a property of the
-    interpreter build, not of this package: `json.loads` recurses in C, and
-    `_collect_scorers` recurses in Python. Locally the parse gives out first
-    and the detail says `RecursionError`; on CI the parse survives and the walk
-    gives out, and the detail says the walk could not follow it.
+    Which refusal fires is a property of the interpreter build, not of this
+    package. `json.loads` recurses in C, and how deep it gets before the stack
+    guard trips differs between 3.10 and 3.12 -- on 3.10 the parse gives out
+    and the answer is `artifact_unreadable`; on 3.12 the parse survives 2000
+    levels, the pinned schema then finds no `results` key at the root, and the
+    answer is `unrecognized_artifact_schema`.
 
-    An earlier version of this test asserted the parse message and was red on
-    CI only -- coupling a contract test to a message string, which is exactly
-    the fragility this suite is supposed to avoid. What the contract actually
-    promises is the pair below: a refusal, and no exception. Both limits are
-    now covered, one on each interpreter.
+    An earlier version asserted a *message*, and was red on CI only. This one
+    then asserted `artifact_unreadable`, which held while `_collect_scorers`
+    still recursed in Python -- the pin landed on main removed that walk, so
+    the second limit this test used to describe no longer exists, and the
+    assertion went red on 3.12 for the same reason as the first: it named a
+    mechanism rather than the contract.
+
+    What the contract promises is what is asserted below. A document this tool
+    cannot read is refused, with a reason from the closed set, and it never
+    becomes a PASS over an empty scorer list -- which is the failure mode this
+    package exists to catch, and the only outcome here that would be wrong.
     """
     path = sink("run", {"results": []})
     depth = 2_000
@@ -371,7 +378,8 @@ def test_a_document_too_deep_to_read_is_blocked_never_an_empty_pass(sink):
     )
     result = score_run("run")
     assert result["verdict"] == BLOCKED
-    assert result["blocked_reason"] == BLOCKED_ARTIFACT_UNREADABLE
+    assert result["blocked_reason"] in {BLOCKED_ARTIFACT_UNREADABLE, BLOCKED_ARTIFACT_SCHEMA}
+    assert result["blocked_detail"]
     assert result["pass_rate"] is None
     assert result["scorers"] == []
 
