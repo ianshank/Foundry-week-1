@@ -193,13 +193,20 @@ def _collect_scorers(
                     }
                 )
             else:
+                # Redacted on the way out. The scorer name and its detail come
+                # straight from a file this wrapper did not write, and both are
+                # copied into a result the model reads and a trace an operator
+                # commits. Same gap as `planlint`'s parsed payload, one module
+                # over: text that arrived already structured skipped the
+                # redaction that only ever ran on raw strings.
+                detail = node.get("reason") or node.get("message") or node.get("detail")
                 out.append(
                     {
-                        "scorer": name,
+                        "scorer": guards.redact(name),
                         "passed": _normalise_passed(node[verdict_key]),
                         "source_path": path,
                         "named_by": "field" if explicit else "path",
-                        "detail": node.get("reason") or node.get("message") or node.get("detail"),
+                        "detail": guards.redact(detail) if isinstance(detail, str) else detail,
                     }
                 )
         for key, value in node.items():
@@ -311,10 +318,18 @@ def score_run(
                 artifact=str(resolved),
             )
         document = json.loads(resolved.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, RecursionError) as error:
-        # RecursionError comes from `json.loads` on deeply nested input and is
-        # not a JSONDecodeError. Uncaught it escaped this function entirely,
-        # contradicting the "never raises" contract in the module docstring.
+    except (json.JSONDecodeError, RecursionError, UnicodeDecodeError) as error:
+        # Three ways this raises, and none of them is the obvious one:
+        #
+        # * `RecursionError` comes from `json.loads` on deeply nested input and
+        #   is not a `JSONDecodeError`.
+        # * `UnicodeDecodeError` comes from `read_text` on an artifact that is
+        #   not valid UTF-8. It subclasses `ValueError` as a sibling of
+        #   `JSONDecodeError`, not a parent, so catching the latter missed it.
+        #
+        # Refused rather than decoded with replacement, which is the choice
+        # this module makes everywhere: substituting U+FFFD into a scorer name
+        # would let a run report on evidence it could not actually read.
         return _blocked(
             BLOCKED_ARTIFACT_UNREADABLE,
             f"artifact is not usable JSON: {type(error).__name__}: {error}",

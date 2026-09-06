@@ -172,3 +172,128 @@ def test_each_tool_passes_its_own_hint(tmp_path):
 
     assert "PLANLINT_ALLOWED_ROOTS" in str(lint_openspec(target=str(tmp_path))["blocked_detail"])
     assert "EVAL_ALLOWED_ROOTS" in str(score_run("r")["blocked_detail"])
+
+
+# --------------------------------------------------------------------------
+# A path the operating system cannot represent.
+#
+# `Path.resolve` raises for these rather than returning, and the argument comes
+# from a model. The guard has to turn that into a refusal, because a refusal is
+# a verdict and an exception is not.
+# --------------------------------------------------------------------------
+
+
+def test_a_nul_byte_in_the_target_is_a_refusal_not_an_exception(tmp_path):
+    with pytest.raises(guards.GuardRejection) as caught:
+        guards.check_target(f"{tmp_path}/spec\x00.md", (tmp_path,))
+    assert caught.value.reason == guards.REJECT_INVALID_PATH
+
+
+def test_the_refusal_detail_carries_the_cause_but_not_the_path(tmp_path):
+    """The path is the malformed thing. Echoing it puts a NUL into a result
+    that gets serialised to JSON and written into a trace."""
+    with pytest.raises(guards.GuardRejection) as caught:
+        guards.check_target(f"{tmp_path}/spec\x00.md", (tmp_path,))
+    assert "ValueError" in caught.value.detail
+    assert "\x00" not in caught.value.detail
+
+
+def test_a_long_path_is_still_ordinary(tmp_path):
+    """Only paths the OS cannot represent are refused as invalid. A merely long
+    one resolves and is judged on containment like any other."""
+    long_target = f"{tmp_path}/" + "a" * 5000
+    assert guards.check_target(long_target, (tmp_path,))
+
+
+# --------------------------------------------------------------------------
+# `redact_structure` -- redaction for payloads that arrive already parsed.
+# --------------------------------------------------------------------------
+
+TOKEN = "ghp_" + "B" * 36
+
+
+def test_a_credential_in_a_nested_value_is_redacted():
+    payload = {"findings": [{"message": f"saw {TOKEN}"}]}
+    out, exceeded = guards.redact_structure(payload, max_depth=16)
+    assert exceeded is False
+    assert TOKEN not in str(out)
+    assert "[REDACTED:github-token]" in out["findings"][0]["message"]
+
+
+def test_a_credential_used_as_a_key_is_redacted():
+    """A map of secrets keyed by the secret is not a hypothetical shape."""
+    out, _ = guards.redact_structure({TOKEN: "value"}, max_depth=16)
+    assert TOKEN not in str(list(out))
+
+
+def test_scalars_and_containers_survive_unchanged():
+    payload = {"n": 1, "f": 1.5, "b": True, "nil": None, "empty": [], "obj": {}}
+    out, _ = guards.redact_structure(payload, max_depth=16)
+    assert out == payload
+
+
+def test_the_input_is_not_mutated():
+    """Callers keep the original for size accounting, so redaction must copy."""
+    payload = {"message": f"saw {TOKEN}"}
+    guards.redact_structure(payload, max_depth=16)
+    assert payload["message"] == f"saw {TOKEN}"
+
+
+def test_list_order_is_preserved():
+    out, _ = guards.redact_structure(["a", "b", "c", "d"], max_depth=16)
+    assert out == ["a", "b", "c", "d"]
+
+
+def test_a_subtree_past_the_depth_limit_is_marked_not_silently_dropped():
+    deep: object = "bottom"
+    for _ in range(10):
+        deep = {"next": deep}
+    out, exceeded = guards.redact_structure(deep, max_depth=3)
+    assert exceeded is True
+    assert guards.DEPTH_LIMIT_MARKER in str(out)
+
+
+def test_a_document_far_deeper_than_the_recursion_limit_does_not_raise():
+    """The walk is iterative for the same reason `json.loads` needed guarding:
+    a RecursionError escaping here would be an exception standing in for a
+    verdict, one layer further in."""
+    deep: object = "bottom"
+    for _ in range(50_000):
+        deep = [deep]
+    out, exceeded = guards.redact_structure(deep, max_depth=100)
+    assert exceeded is True
+    assert out is not None
+
+
+# --------------------------------------------------------------------------
+# Negative cases that were correct but unpinned. A review found each of these
+# reachable and untested; behaviour is unchanged, the guarantee is not.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+def test_a_blank_target_is_refused(tmp_path, blank):
+    with pytest.raises(guards.GuardRejection) as caught:
+        guards.check_target(blank, (tmp_path,))
+    assert caught.value.reason == "empty_target"
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_verb_is_refused(blank):
+    with pytest.raises(guards.GuardRejection) as caught:
+        guards.check_verb(blank)
+    assert caught.value.reason == "empty_verb"
+
+
+def test_an_empty_argv_is_refused():
+    with pytest.raises(guards.GuardRejection) as caught:
+        guards.assert_safe_argv([])
+    assert caught.value.reason == "empty_argv"
+
+
+def test_an_argv_with_no_verb_at_all_is_refused():
+    """Every token is an option or an option's value, so no verb was ever
+    reached. Refused rather than allowed through unchecked."""
+    with pytest.raises(guards.GuardRejection) as caught:
+        guards.assert_safe_argv(["planlint", "--target", "/srv/specs"])
+    assert caught.value.reason == "no_verb"

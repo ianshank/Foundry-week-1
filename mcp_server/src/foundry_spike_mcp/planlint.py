@@ -69,6 +69,7 @@ _RESULT_KEYS = (
     "duration_ms",
     "findings",
     "findings_parse_error",
+    "findings_truncated",
     "stdout_excerpt",
     "stderr",
     "contract",
@@ -113,6 +114,10 @@ def _envelope(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = dict.fromkeys(_RESULT_KEYS)
     base["verdict"] = BLOCKED
     base["contract"] = _contract(BLOCKED)
+    # False rather than None: on a path where no payload was ever read, nothing
+    # was truncated, and that is a fact rather than an absence. A caller that
+    # branches on this key should never have to treat null as a third state.
+    base["findings_truncated"] = False
     base.update(overrides)
     if "verdict" in overrides and "contract" not in overrides:
         base["contract"] = _contract(overrides["verdict"])
@@ -128,6 +133,76 @@ def _blocked(reason: str, detail: str, limit: int, **extra: Any) -> dict[str, An
         blocked_detail=guards.clean(detail, limit),
         **extra,
     )
+
+
+def _read_findings(
+    stdout: str, config: PlanlintConfig
+) -> tuple[Any, str | None, str | None, bool]:
+    """Turn planlint's stdout into evidence: parsed, bounded and redacted.
+
+    Returns ``(findings, parse_error, stdout_excerpt, truncated)``.
+
+    **None of this may change the verdict.** The verdict comes from the exit
+    code and is already decided by the time this runs. Everything here can only
+    downgrade the *evidence*, which is what the contract permits: exit 1 with
+    garbage on stdout is still FINDINGS, and so is exit 1 with a payload too
+    large to hand back.
+
+    Three guarantees, each of which was previously missing on the branch that
+    parses successfully -- the common one:
+
+    * **Bounded.** The size test runs on the raw text, before `json.loads`, so
+      an oversized payload is never materialised as a Python object at all. A
+      valid 30 MB document used to be returned whole.
+    * **Redacted.** A credential inside *valid* JSON went straight back to the
+      model, because redaction only ran in the parse-failure branch. It now
+      runs on the parsed structure, where it cannot corrupt the JSON.
+    * **Never raises.** `json.loads` raises `RecursionError`, which is not a
+      `JSONDecodeError`, on deeply nested input; the redaction walk is
+      iterative for the same reason.
+    """
+    if not stdout.strip():
+        return None, None, None, False
+
+    # Measured on the raw stream. Parsing first to find out whether the result
+    # is too big to keep is exactly the memory exhaustion this prevents.
+    if len(stdout) > config.findings_max_bytes:
+        _log.warning(
+            "planlint stdout over the findings limit; evidence truncated, verdict unaffected",
+            extra={"tool": "planlint"},
+        )
+        return (
+            None,
+            (
+                f"stdout is {len(stdout)} bytes, over the "
+                f"{config.findings_max_bytes} byte findings limit"
+            ),
+            guards.clean(stdout, config.stdout_limit),
+            True,
+        )
+
+    try:
+        parsed = json.loads(stdout)
+    except (json.JSONDecodeError, RecursionError) as error:
+        # Unparsable stdout downgrades the *evidence*, never the verdict. On
+        # exit 2 this is the normal case: the payload is a usage message, and
+        # BLOCKED is already correct without it. RecursionError is here because
+        # deeply nested JSON raises it from inside `json.loads`, and it is not
+        # a JSONDecodeError.
+        return (
+            None,
+            f"stdout is not usable JSON: {type(error).__name__}: {error}",
+            guards.clean(stdout, config.stdout_limit),
+            False,
+        )
+
+    findings, depth_exceeded = guards.redact_structure(parsed, config.findings_max_depth)
+    if depth_exceeded:
+        _log.debug(
+            "findings payload nested past the redaction depth limit; deep subtrees elided",
+            extra={"tool": "planlint"},
+        )
+    return findings, None, None, False
 
 
 def run_verb(
@@ -239,20 +314,7 @@ def run_verb(
     verdict, blocked_reason = verdict_for_exit_code(proc.returncode)
     stdout = _decode(proc.stdout)
 
-    findings: Any = None
-    parse_error: str | None = None
-    stdout_excerpt: str | None = None
-    if stdout.strip():
-        try:
-            findings = json.loads(stdout)
-        except (json.JSONDecodeError, RecursionError) as error:
-            # Unparsable stdout downgrades the *evidence*, never the verdict.
-            # On exit 2 this is the normal case: the payload is a usage
-            # message, and BLOCKED is already correct without it.
-            # RecursionError is here because deeply nested JSON raises it from
-            # inside `json.loads`, and it is not a JSONDecodeError.
-            parse_error = f"stdout is not usable JSON: {type(error).__name__}: {error}"
-            stdout_excerpt = guards.clean(stdout, config.stdout_limit)
+    findings, parse_error, stdout_excerpt, truncated = _read_findings(stdout, config)
 
     result = _envelope(
         verdict=verdict,
@@ -260,6 +322,7 @@ def run_verb(
         blocked_reason=blocked_reason,
         findings=findings,
         findings_parse_error=parse_error,
+        findings_truncated=truncated,
         stdout_excerpt=stdout_excerpt,
         stderr=guards.clean(_decode(proc.stderr), limit),
         duration_ms=duration_ms,
@@ -269,7 +332,11 @@ def run_verb(
     return result
 
 
-def lint_openspec(target: str | None = None, fail_on: str = "ERROR") -> dict[str, Any]:
+def lint_openspec(
+    target: str | None = None,
+    fail_on: str = "ERROR",
+    config: PlanlintConfig | None = None,
+) -> dict[str, Any]:
     """Run `planlint validate` read-only and report its exit code as a verdict.
 
     Never calls `init`, `new`, `witness`, or `make`. Never passes `--force`.
@@ -280,6 +347,11 @@ def lint_openspec(target: str | None = None, fail_on: str = "ERROR") -> dict[str
         target: Absolute path to the repository to lint. Defaults to
             ``$PLANLINT_TARGET``. Must resolve inside ``$PLANLINT_ALLOWED_ROOTS``.
         fail_on: Severity threshold, e.g. ``ERROR``.
+        config: Pre-built settings. Optional, and not part of the MCP tool
+            surface -- a model never supplies it. It exists so that in-process
+            callers (`__main__`'s self-check, tests) can vary configuration
+            without mutating `os.environ`, which is global, order-dependent and
+            has bitten this repository once already.
 
     Returns:
         A dict that always contains ``verdict`` (PASS / FINDINGS / BLOCKED),
@@ -287,7 +359,7 @@ def lint_openspec(target: str | None = None, fail_on: str = "ERROR") -> dict[str
         BLOCKED results also carry ``blocked_reason``. Never raises.
     """
     try:
-        config = load_planlint_config()
+        config = config or load_planlint_config()
     except ConfigError as error:
         return _blocked(BLOCKED_CONFIG_ERROR, str(error), 500, verb="validate")
 

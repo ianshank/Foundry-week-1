@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 #: planlint verbs this wrapper is permitted to invoke. Read-only surface only:
 #: `init`, `new`, `witness` and `make` are absent on purpose.
@@ -75,6 +76,15 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 #: the one that drifts is always the one in the script nobody reads.
 SECRET_PATTERNS = _SECRET_PATTERNS
 
+#: Rejection reason for a path the operating system cannot represent. Named
+#: because two modules raise it and the tests assert on it; the older reasons
+#: are literals only because they each have a single call site.
+REJECT_INVALID_PATH = "invalid_path"
+
+#: Stands in for a subtree that nests deeper than `redact_structure` will walk.
+#: A marker rather than a silent drop: evidence that was removed should say so.
+DEPTH_LIMIT_MARKER = "[...nested deeper than the redaction walk follows...]"
+
 
 class GuardRejection(Exception):
     """A call was refused before any subprocess ran.
@@ -115,7 +125,19 @@ def check_target(
     candidate = Path(target).expanduser()
     if not candidate.is_absolute():
         raise GuardRejection("relative_target", target)
-    resolved = candidate.resolve(strict=False)
+    try:
+        resolved = candidate.resolve(strict=False)
+    except (ValueError, OSError) as error:
+        # `Path.resolve` raises rather than returning for a path the operating
+        # system cannot represent -- an embedded NUL is `ValueError`, a symlink
+        # loop is `OSError`. Both arrive here from a *model-supplied* argument,
+        # so letting them escape hands the model a framework error with no
+        # verdict field: the one thing this package exists to prevent.
+        #
+        # The message deliberately does not echo the target. It is the thing
+        # that is malformed, and a NUL byte pasted back into a JSON result is
+        # a second problem on top of the first.
+        raise GuardRejection(REJECT_INVALID_PATH, f"{type(error).__name__}: {error}") from error
     for root in roots:
         if resolved == root or resolved.is_relative_to(root):
             return resolved
@@ -202,3 +224,63 @@ def clean(text: str, limit: int) -> str:
     """Redact then truncate. Order matters: truncating first can bisect a
     token and leave half a credential in the evidence file."""
     return tail(redact(text or ""), limit)
+
+
+def redact_structure(value: Any, max_depth: int) -> tuple[Any, bool]:
+    """Redact every string inside a parsed JSON structure, keys included.
+
+    `clean` protects text. This protects *parsed* payloads, which were the gap:
+    a tool that parses stdout as JSON and returns the object has routed a
+    credential straight past the text-level redaction, because the redaction
+    only ever ran on the branch that failed to parse.
+
+    Redacting the raw JSON text before parsing would be simpler and is wrong.
+    One of the credential patterns consumes to the next whitespace, so on input
+    like ``{"authorization": "Bearer abc"}`` it eats the closing quote and
+    leaves text that no longer parses. Structure first, then strings.
+
+    The walk is **iterative**. A recursive one would raise `RecursionError` on
+    a deeply nested document, and this package's whole contract is that an
+    exception is never a verdict -- the same trap `json.loads` sets, one layer
+    further in. Depth is still bounded, because an attacker-shaped payload can
+    nest far enough to exhaust memory rather than stack: past `max_depth` the
+    subtree is replaced with `DEPTH_LIMIT_MARKER`.
+
+    Returns ``(redacted, depth_exceeded)``. Never raises. Never mutates the
+    input: callers keep the original for size accounting.
+    """
+    holder: dict[str, Any] = {}
+    stack: list[tuple[Any, Any, Any, int]] = [(value, holder, "root", 0)]
+    depth_exceeded = False
+
+    while stack:
+        node, parent, key, depth = stack.pop()
+        if isinstance(node, str):
+            parent[key] = redact(node)
+        elif isinstance(node, dict):
+            if depth >= max_depth:
+                parent[key] = DEPTH_LIMIT_MARKER
+                depth_exceeded = True
+                continue
+            branch: dict[Any, Any] = {}
+            parent[key] = branch
+            for child_key, child in node.items():
+                # Keys are redacted too. A credential is as likely to appear as
+                # a key in a map of secrets as it is in a value.
+                safe_key = redact(child_key) if isinstance(child_key, str) else child_key
+                stack.append((child, branch, safe_key, depth + 1))
+        elif isinstance(node, list):
+            if depth >= max_depth:
+                parent[key] = DEPTH_LIMIT_MARKER
+                depth_exceeded = True
+                continue
+            # Pre-sized so the stack can assign by index in any order.
+            row: list[Any] = [None] * len(node)
+            parent[key] = row
+            for index, child in enumerate(node):
+                stack.append((child, row, index, depth + 1))
+        else:
+            # int, float, bool, None. Nothing to redact and nothing to walk.
+            parent[key] = node
+
+    return holder["root"], depth_exceeded
