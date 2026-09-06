@@ -71,7 +71,12 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # `Authorization: Bearer <token>` ate the word "Bearer" and left the
     # credential itself in the evidence. It redacted the label and kept the
     # secret. `(?:\S+[ \t]+)?` takes the scheme when one is present.
-    (re.compile(r"(?i)\b(authorization)\s*[:=]\s*(?:\S+[ \t]+)?\S+"), r"\1: [REDACTED]"),
+    # `\s+` after the scheme, not `[ \t]+`. With a horizontal-only separator a
+    # wrapped header -- `Authorization: Bearer\n<token>` -- matched the scheme
+    # on the first line and left the credential on the second: the exact defect
+    # this rule was rewritten to close, back again for text that happens to be
+    # line-wrapped. Transcripts are full of wrapped headers.
+    (re.compile(r"(?i)\b(authorization)\s*[:=]\s*(?:\S+\s+)?\S+"), r"\1: [REDACTED]"),
     # The same credential without a header around it. `verifier_probe` builds
     # exactly this string for its outbound header, so a transcript could carry
     # it with no `authorization:` prefix to match on.
@@ -104,7 +109,7 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         # two letters and the over-redaction it was added to fix came straight
         # back. An inert guard reads exactly like a working one.
         re.compile(
-            r"\b((?i:bearer|basic))[ \t]+"
+            r"\b((?i:bearer|basic))\s+"
             r"(?=[A-Za-z0-9._\-+/=]*[0-9._\-+/=]|[A-Za-z][A-Za-z0-9._\-+/=]*[A-Z])"
             r"([A-Za-z0-9._\-+/=]{8,})"
         ),
@@ -113,6 +118,36 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|APIKEY|API_KEY))\s*=\s*\S+"),
         r"\1=[REDACTED]",
+    ),
+    # Shapes with no rule at all until a security review went looking for them.
+    # This list gates commits as well as tool output -- `scan_evidence.py`
+    # scans with it and `promote_trace.py` refuses on a hit -- so a shape
+    # missing here is a shape that can be published from a public repository
+    # holding transcripts derived from private ones.
+    #
+    # Every one is prefix- or label-anchored, for the reason this block opens
+    # with: a general "long opaque string" rule would redact the git SHAs and
+    # rule identifiers that are the evidence.
+    (
+        re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----"),
+        "[REDACTED:private-key]",
+    ),
+    # Credentials embedded in a URL. Anchored on the scheme separator so it
+    # cannot match a bare `host:port` or an ordinary `key: value` line.
+    (re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "://[REDACTED]@"),
+    (re.compile(r"(?i)\b(aws_secret_access_key)\s*[:=]\s*\S+"), r"\1=[REDACTED]"),
+    (re.compile(r"(?i)\bAccountKey=[A-Za-z0-9+/=]{16,}"), "AccountKey=[REDACTED]"),
+    (re.compile(r"\bglpat-[A-Za-z0-9_\-]{16,}"), "[REDACTED:gitlab-token]"),
+    (re.compile(r"https://hooks\.slack\.com/services/\S+"), "[REDACTED:slack-webhook]"),
+    (re.compile(r"\bAIza[A-Za-z0-9_\-]{30,}"), "[REDACTED:google-api-key]"),
+    # The `sk-` rule above is hyphen-anchored and misses the underscore forms.
+    (re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{8,}"), "[REDACTED:stripe-key]"),
+    (re.compile(r"\bnpm_[A-Za-z0-9]{20,}"), "[REDACTED:npm-token]"),
+    (re.compile(r"\bhf_[A-Za-z0-9]{20,}"), "[REDACTED:huggingface-token]"),
+    (re.compile(r"\bpypi-[A-Za-z0-9_\-]{20,}"), "[REDACTED:pypi-token]"),
+    (
+        re.compile(r"(?i)\b(x-api-key|api-key|cookie|proxy-authorization)\s*[:=]\s*\S+"),
+        r"\1: [REDACTED]",
     ),
 )
 
@@ -306,6 +341,23 @@ def _reject_non_finite(token: str) -> Any:
     )
 
 
+def _checked_float(token: str) -> float:
+    """Reject a number that *overflows* to infinity rather than naming it.
+
+    `parse_constant` fires only on the literal tokens `NaN`, `Infinity` and
+    `-Infinity`. `1e999` is an ordinary JSON number that Python parses to `inf`
+    without going near that hook, and it re-serialises as `Infinity` -- the
+    same unframeable payload, by a route the first version of this guard did
+    not cover. Found by a security review, not by the tests written for it.
+    """
+    value = float(token)
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ValueError(
+            f"{token} overflows to a non-finite float; it cannot be framed as JSON-RPC"
+        )
+    return value
+
+
 def loads_strict(text: str) -> Any:
     """`json.loads`, minus the non-standard floats Python accepts by default.
 
@@ -325,7 +377,7 @@ def loads_strict(text: str) -> Any:
     so callers need one handler rather than a list of `json` subclasses that
     has already been wrong three times.
     """
-    return json.loads(text, parse_constant=_reject_non_finite)
+    return json.loads(text, parse_constant=_reject_non_finite, parse_float=_checked_float)
 
 
 def redact_structure(value: Any, max_depth: int) -> tuple[Any, bool]:
@@ -380,14 +432,37 @@ def redact_structure(value: Any, max_depth: int) -> tuple[Any, bool]:
             # this function is written to survive: 4000 credential-shaped keys
             # inside the size budget took 905ms of pure probing. Remembering
             # the next free ordinal per base makes it linear.
+            # Redact every key first, then allocate. Two passes, because a
+            # single pass got each half wrong in turn:
+            #
+            # * Probing with `while candidate in taken` is quadratic on the
+            #   input this function exists to survive -- 4000 keys collapsing
+            #   to one marker spent 905ms scanning. A per-base counter fixes
+            #   that.
+            # * But a counter alone can hand back a name that a *literal* key
+            #   already holds. `{"ghp_A...": 1, "ghp_B...": 2,
+            #   "[REDACTED:github-token]#2": 3}` produced two entries out of
+            #   three, dropping the third silently -- in the function written
+            #   to stop evidence disappearing silently. Knowing every redacted
+            #   key up front is what makes a genuinely free name findable.
+            redacted_keys = [
+                redact(child_key) if isinstance(child_key, str) else child_key
+                for child_key in node
+            ]
+            occupied = set(redacted_keys)
             next_ordinal: dict[Any, int] = {}
-            for child_key, child in node.items():
-                safe_key = redact(child_key) if isinstance(child_key, str) else child_key
-                base_key = safe_key
-                ordinal = next_ordinal.get(base_key, 1)
-                if ordinal > 1:
+            for (_, child), base_key in zip(node.items(), redacted_keys, strict=True):
+                safe_key = base_key
+                if base_key in next_ordinal:
+                    ordinal = next_ordinal[base_key]
                     safe_key = f"{base_key}#{ordinal}"
-                next_ordinal[base_key] = ordinal + 1
+                    while safe_key in occupied:
+                        ordinal += 1
+                        safe_key = f"{base_key}#{ordinal}"
+                    occupied.add(safe_key)
+                    next_ordinal[base_key] = ordinal + 1
+                else:
+                    next_ordinal[base_key] = 2
                 stack.append((child, branch, safe_key, depth + 1))
         elif isinstance(node, list):
             if depth >= max_depth:

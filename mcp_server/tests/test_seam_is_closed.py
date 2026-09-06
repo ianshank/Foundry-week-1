@@ -86,21 +86,75 @@ def test_no_fourth_verdict_string_can_be_returned(module):
     assert "UNKNOWN" not in literals
 
 
-def test_subprocess_is_only_ever_invoked_with_a_timeout():
-    """A wrapper that can hang has no BLOCKED path, it just stops answering."""
+def test_no_subprocess_wait_is_unbounded():
+    """A wrapper that can hang has no BLOCKED path, it just stops answering.
+
+    The invariant is unchanged; the shape it has to recognise is not. This
+    check used to require `timeout=` on the call that *starts* the process,
+    including `subprocess.Popen` -- which does not take one, because with
+    `Popen` the bound belongs on the wait. So the old form would have rejected
+    every correct use of `Popen` while passing a `communicate()` with no
+    timeout at all, which is the actual hang.
+
+    It now checks the two shapes separately, and is strictly stricter than
+    before: the blocking one-shot helpers still need `timeout=`, and every
+    `communicate()` and `wait()` in the module is checked too.
+    """
     source = (SRC / "planlint.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"run", "call", "check_output", "check_call", "Popen"}
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "subprocess"
-    ]
-    assert calls, "expected planlint.py to shell out"
-    for call in calls:
-        assert any(kw.arg == "timeout" for kw in call.keywords), (
-            f"subprocess call at line {call.lineno} has no timeout"
+
+    def _attribute_calls(names: set[str], receiver: str | None = None) -> list[ast.Call]:
+        found = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            if node.func.attr not in names:
+                continue
+            if receiver is not None:
+                value = node.func.value
+                if not (isinstance(value, ast.Name) and value.id == receiver):
+                    continue
+            found.append(node)
+        return found
+
+    def _has_timeout(call: ast.Call) -> bool:
+        return any(keyword.arg == "timeout" for keyword in call.keywords)
+
+    # 1. The blocking one-shot helpers take the bound at the call site.
+    one_shot = _attribute_calls({"run", "call", "check_output", "check_call"}, "subprocess")
+    for call in one_shot:
+        assert _has_timeout(call), f"subprocess call at line {call.lineno} has no timeout"
+
+    # 2. `Popen` defers the wait, so the bound has to be on the wait instead.
+    spawned = _attribute_calls({"Popen"}, "subprocess")
+    waits = _attribute_calls({"communicate", "wait"})
+    assert one_shot or spawned, "expected planlint.py to shell out"
+
+    if spawned:
+        assert waits, "planlint.py spawns a process and never bounds the wait on it"
+        bounded = [call for call in waits if _has_timeout(call)]
+        assert bounded, "no communicate()/wait() carries a timeout; the wrapper can hang"
+
+    # 3. An unbounded wait is allowed only where the process is already dead --
+    #    the post-kill drain. Anything else is a hang waiting to happen.
+    #    Scoped to the *body* of `_drain`, not to everything after its `def`.
+    #    The first version of this rule compared line numbers against the
+    #    definition line, so every later call in the file counted as "inside"
+    #    it -- and a mutation removing the real timeout passed. A check that
+    #    cannot fail is worse than no check, because it is trusted.
+    drain_body = next(
+        (
+            range(node.lineno, (node.end_lineno or node.lineno) + 1)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_drain"
+        ),
+        None,
+    )
+    for call in waits:
+        if _has_timeout(call):
+            continue
+        attr = call.func.attr  # type: ignore[union-attr]
+        assert drain_body is not None and call.lineno in drain_body, (
+            f"unbounded {attr}() at line {call.lineno}: only the post-kill drain "
+            "may wait without a bound, because there the process is already dead"
         )

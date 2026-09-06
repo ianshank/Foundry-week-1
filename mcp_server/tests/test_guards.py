@@ -472,3 +472,112 @@ def test_redaction_also_makes_its_output_encodable():
 @pytest.mark.parametrize("text", ["plain", "with spaces", "ünïcodé", "emoji 🙂", ""])
 def test_wire_safe_leaves_ordinary_text_alone(text):
     assert guards.wire_safe(text) == text
+
+
+# --------------------------------------------------------------------------
+# Findings from a security review of this branch. Each one is a credential
+# that reached the evidence, or a rule that ate evidence instead.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        pytest.param(
+            "Authorization: Bearer\ndXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA", id="wrapped-header"
+        ),
+        pytest.param("Bearer\nAbCdEf0123456789xyz", "AbCdEf0123456789xyz", id="wrapped-bare"),
+    ],
+)
+def test_a_wrapped_header_does_not_keep_its_credential(text, secret):
+    """The scheme and the credential can land on different lines, and a
+    horizontal-only separator matched the first and left the second -- the same
+    label-redacted, secret-kept defect this rule was rewritten to close."""
+    redacted = guards.redact(text)
+    assert secret not in redacted
+    assert "REDACTED" in redacted
+
+
+# Credential-shaped fixtures, assembled at run time rather than written as
+# literals. They have to be complete and realistic or they would not exercise
+# the patterns -- but a literal here is indistinguishable from a real leak to
+# a scanner, and GitHub's push protection duly blocked this file. Composing
+# them keeps the test honest and keeps scanner bait out of the repository.
+# `test_evidence_hygiene.py` asserts the same discipline for the fixtures it
+# owns, and `.gitleaks.toml` allowlists this file for the same reason.
+_AWS_SECRET = "wJalrXUtnFEMI" + "/K7MDENG/bPxRfi" + "CYEXAMPLEKEY"
+_AZURE_KEY = "Zm9vYmFyYmF6cXV4" + "MTIzNA=="
+_GITLAB_PAT = "glpat" + "-" + "ABCdef123456789xyzQ"
+_SLACK_HOOK = "https://hooks.slack.com/services/" + "T00000/B00000/XXXXXXXXXXXX"
+_STRIPE_KEY = "sk" + "_live_" + "9999999999abcdef"
+_API_KEY = "abcdef123456789"
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        pytest.param(
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKC\n-----END RSA PRIVATE KEY-----",
+            "MIIEowIBAAKC",
+            id="pem-block",
+        ),
+        pytest.param(
+            "https://alice:hunter2SuperSecret@internal.example.com/repo.git",
+            "hunter2SuperSecret",
+            id="basic-auth-in-url",
+        ),
+        pytest.param(
+            f"aws_secret_access_key = {_AWS_SECRET}", _AWS_SECRET, id="aws-secret-not-just-the-id"
+        ),
+        pytest.param(
+            f"AccountKey={_AZURE_KEY};EndpointSuffix=core.windows.net",
+            _AZURE_KEY,
+            id="azure-connection-string",
+        ),
+        pytest.param(_GITLAB_PAT, _GITLAB_PAT.split("-", 1)[1], id="gitlab-pat"),
+        pytest.param(_SLACK_HOOK, _SLACK_HOOK.rsplit("/", 1)[1], id="slack-webhook-url"),
+        pytest.param(_STRIPE_KEY, _STRIPE_KEY.rsplit("_", 1)[1], id="stripe-underscore-form"),
+        pytest.param(f"x-api-key: {_API_KEY}", _API_KEY, id="api-key-header"),
+    ],
+)
+def test_credential_shapes_that_previously_had_no_rule(text, secret):
+    """Every one of these passed through untouched until a review went looking.
+
+    This list gates commits as well as tool output -- `scan_evidence.py` scans
+    with it -- so each was a shape publishable from a public repository holding
+    transcripts derived from private ones.
+    """
+    redacted = guards.redact(text)
+    assert secret not in redacted
+    assert "REDACTED" in redacted
+
+
+@pytest.mark.parametrize("literal", ["1e999", "-1e999", "1E400"])
+def test_a_number_that_overflows_to_infinity_is_refused(literal):
+    """`parse_constant` fires only on the bare `Infinity` token. `1e999` is an
+    ordinary JSON number that Python parses to `inf` and re-serialises as
+    `Infinity` -- the same unframeable payload by a route the first version of
+    this guard did not cover."""
+    with pytest.raises(ValueError):
+        guards.loads_strict(f'{{"score": {literal}}}')
+
+
+def test_ordinary_floats_are_untouched():
+    assert guards.loads_strict('{"a": 1.5, "b": -2e10, "c": 0.0}') == {
+        "a": 1.5,
+        "b": -2e10,
+        "c": 0.0,
+    }
+
+
+def test_a_generated_suffix_never_overwrites_a_literal_key():
+    """Two credentials collapsing to one marker are disambiguated with `#N`,
+    and `#N` can be a key the document already has. That dropped an entry
+    silently, in the function written to stop entries being dropped silently.
+    """
+    first = "ghp_" + "A" * 36
+    second = "ghp_" + "B" * 36
+    payload = {first: "one", second: "two", "[REDACTED:github-token]#2": "three"}
+    redacted, _ = guards.redact_structure(payload, max_depth=8)
+    assert len(redacted) == 3
+    assert sorted(redacted.values()) == ["one", "three", "two"]

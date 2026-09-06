@@ -31,8 +31,11 @@ Two structural properties worth stating, because both were review findings:
 
 from __future__ import annotations
 
+import contextlib
+import os
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -80,6 +83,43 @@ _RESULT_KEYS = (
 )
 
 _log = get_logger("planlint")
+
+
+#: Whether this platform can signal a whole process group. POSIX can; Windows
+#: has no equivalent, and asking for a new session there raises. The timeout
+#: still kills the direct child everywhere -- group killing is the part that
+#: also reaches its children.
+_CAN_KILL_GROUPS = hasattr(os, "killpg") and hasattr(os, "getpgid")
+
+#: How long to wait for a killed child's pipes after the kill signal. Short:
+#: the process is already dead, this only collects what it managed to write.
+_DRAIN_SECONDS = 5
+
+
+def _end_process_tree(process: subprocess.Popen[str]) -> None:
+    """Kill the timed-out child and anything it started. Never raises.
+
+    Called from an exception handler on a path whose entire contract is that
+    it returns a verdict, so a failure to clean up must not become the thing
+    the caller sees. A process that is already gone is the normal case.
+    """
+    try:
+        if _CAN_KILL_GROUPS:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        else:  # pragma: no cover - Windows
+            process.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        with contextlib.suppress(OSError):
+            process.kill()
+
+
+def _drain(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """Collect whatever the child wrote before it was killed. Never raises."""
+    try:
+        stdout, stderr = process.communicate(timeout=_DRAIN_SECONDS)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        return "", ""
+    return _decode(stdout), _decode(stderr)
 
 
 def _decode(stream: Any) -> str:
@@ -296,7 +336,22 @@ def run_verb(
         # looks exactly like a precondition error. `00-baseline.sh` reports
         # `--format` as a candidate, so this repo was routing operators into
         # that trap by its own instructions.
-        argv.extend(shlex.split(config.json_flag))
+        try:
+            argv.extend(shlex.split(config.json_flag))
+        except ValueError as error:
+            # `shlex.split` raises on an unbalanced quote, and this value comes
+            # from the environment: `PLANLINT_JSON_FLAG='"'` sent a bare
+            # ValueError straight out of this function. That is a framework
+            # error with no verdict field -- the one outcome the module
+            # docstring forbids -- reached through the setting the docstring
+            # above spends nine lines explaining how to get right.
+            return _blocked(
+                BLOCKED_CONFIG_ERROR,
+                f"PLANLINT_JSON_FLAG is not parseable as a command line: {error}",
+                limit,
+                verb=safe_verb,
+                target=str(resolved),
+            )
 
     try:
         guards.assert_safe_argv(argv)
@@ -315,23 +370,20 @@ def run_verb(
 
     _log.debug("running planlint", extra={"tool": "planlint", "command": redacted_argv})
     try:
-        proc = subprocess.run(  # noqa: S603 - argv is constructed, never model-supplied
+        # `Popen` rather than `run`, for one reason: the handle has to survive
+        # a timeout. `subprocess.run` kills the direct child and raises, and
+        # `TimeoutExpired` carries no process object, so anything the child
+        # spawned is orphaned. A review reproduced it -- a wrapper that starts
+        # a worker leaks that worker on every timeout, holding the stdout pipe
+        # and accumulating for the life of the server. Harmless for one
+        # developer at a terminal, which is why it lasted; not harmless for
+        # anything long-lived, which is what a hosted week 2 would be.
+        process = subprocess.Popen(  # noqa: S603 - argv is constructed, never model-supplied
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=config.timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as expired:
-        # The refusal the runbook asked for and its sample code could not
-        # deliver: a timeout is "could not look", never "found nothing".
-        return _blocked(
-            BLOCKED_TIMEOUT,
-            f"planlint exceeded {config.timeout_seconds}s",
-            limit,
-            stderr=guards.clean(_decode(expired.stderr), limit),
-            duration_ms=int((time.monotonic() - started) * 1000),
-            **common,
+            start_new_session=_CAN_KILL_GROUPS,
         )
     except FileNotFoundError:
         return _blocked(
@@ -342,21 +394,42 @@ def run_verb(
             BLOCKED_PROCESS_ERROR, f"{type(error).__name__}: {error}", limit, **common
         )
 
+    try:
+        stdout_text, stderr_text = process.communicate(timeout=config.timeout_seconds)
+    except subprocess.TimeoutExpired:
+        # The refusal the runbook asked for and its sample code could not
+        # deliver: a timeout is "could not look", never "found nothing".
+        _end_process_tree(process)
+        _, late_stderr = _drain(process)
+        return _blocked(
+            BLOCKED_TIMEOUT,
+            f"planlint exceeded {config.timeout_seconds}s",
+            limit,
+            stderr=guards.clean(late_stderr, limit),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            **common,
+        )
+    except OSError as error:  # a read failure part-way through the stream
+        _end_process_tree(process)
+        return _blocked(
+            BLOCKED_PROCESS_ERROR, f"{type(error).__name__}: {error}", limit, **common
+        )
+
     duration_ms = int((time.monotonic() - started) * 1000)
-    verdict, blocked_reason = verdict_for_exit_code(proc.returncode)
-    stdout = _decode(proc.stdout)
+    verdict, blocked_reason = verdict_for_exit_code(process.returncode)
+    stdout = _decode(stdout_text)
 
     findings, parse_error, stdout_excerpt, truncated = _read_findings(stdout, config)
 
     result = _envelope(
         verdict=verdict,
-        exit_code=proc.returncode,
+        exit_code=process.returncode,
         blocked_reason=blocked_reason,
         findings=findings,
         findings_parse_error=parse_error,
         findings_truncated=truncated,
         stdout_excerpt=stdout_excerpt,
-        stderr=guards.clean(_decode(proc.stderr), limit),
+        stderr=guards.clean(stderr_text, limit),
         duration_ms=duration_ms,
         **common,
     )

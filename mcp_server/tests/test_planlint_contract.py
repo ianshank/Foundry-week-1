@@ -8,6 +8,9 @@ verdict.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import time
 from dataclasses import replace
 
 import pytest
@@ -523,3 +526,50 @@ def test_the_exit_code_mapping_never_returns_pass_for_an_unknown_code(code):
     verdict, reason = verdict_for_exit_code(code)
     assert verdict == BLOCKED
     assert reason == BLOCKED_UNEXPECTED_EXIT
+
+
+def test_an_unparseable_json_flag_is_blocked_not_raised(fake_planlint, configured):
+    """`shlex.split` raises on an unbalanced quote, and the value comes from the
+    environment. `PLANLINT_JSON_FLAG='\"'` sent a bare ValueError out of
+    `run_verb` -- a framework error with no verdict field, reached through the
+    one setting the module spends nine lines explaining how to get right."""
+    configured(fake_planlint(exit_code=0, stdout="{}"), PLANLINT_JSON_FLAG='"')
+    result = lint_openspec()
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == "configuration_error"
+    assert "PLANLINT_JSON_FLAG" in result["blocked_detail"]
+
+
+def test_a_timeout_reaps_the_whole_process_tree(tmp_path, configured, fake_planlint):
+    """`subprocess.run(timeout=)` kills the direct child only, so a wrapper
+    that starts a worker leaked that worker on every timeout -- holding the
+    stdout pipe and accumulating for the life of the server.
+
+    The grandchild is given a distinctive name so the assertion cannot match
+    this test's own process or the harness's.
+    """
+    if not hasattr(os, "killpg"):  # pragma: no cover - Windows
+        pytest.skip("process groups are POSIX-only")
+
+    marker = "ZZ_FOUNDRY_GRANDCHILD_ZZ"
+    script = tmp_path / "bin" / "planlint-tree"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        f"#!/bin/sh\nsh -c 'exec -a {marker} sleep 45' &\nsleep 45\n", encoding="utf-8"
+    )
+    script.chmod(0o755)
+
+    def _alive() -> int:
+        listing = subprocess.run(["ps", "-eo", "comm"], capture_output=True, text=True, check=False)
+        return sum(1 for line in listing.stdout.splitlines() if line.strip() == marker)
+
+    assert _alive() == 0, "a previous run leaked; the assertion below would be meaningless"
+    configured(fake_planlint(exit_code=0), PLANLINT_TIMEOUT="1")
+    result = lint_openspec(config=replace(load_planlint_config(), binary=str(script)))
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_TIMEOUT
+
+    deadline = time.monotonic() + 10
+    while _alive() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert _alive() == 0, "the grandchild outlived the timeout that killed its parent"
