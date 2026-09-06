@@ -399,3 +399,24 @@ def test_an_unknown_tool_is_refused_without_killing_the_session(
         assert _tool_payload(recovered)["verdict"] == "PASS"
     finally:
         client.close()
+
+
+def test_an_unmapped_exit_code_collapses_to_blocked_over_the_wire(
+    stub_planlint, server_env, spec_target
+):
+    """The gap a contract review found in this file: the round-trip test
+    covers 0, 1 and 2, so the fourth-state rule was only ever asserted in
+    process. An unmapped code must arrive as BLOCKED with the raw code intact,
+    never as a new state the agent has no rule for."""
+    client = _StdioClient(server_env(stub_planlint(exit_code=42, stdout=""), spec_target))
+    try:
+        client.handshake()
+        payload = _tool_payload(
+            client.request(3, "tools/call", {"name": "lint_openspec", "arguments": {}})
+        )
+        assert payload["verdict"] == "BLOCKED"
+        assert payload["blocked_reason"] == "unexpected_exit_code"
+        # Collapsed, not discarded: the code the model needs to report survives.
+        assert payload["exit_code"] == 42
+    finally:
+        client.close()

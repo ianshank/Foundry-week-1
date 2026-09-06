@@ -406,3 +406,40 @@ def test_a_document_too_deep_to_read_is_blocked_never_an_empty_pass(sink):
     assert result["blocked_reason"] == BLOCKED_ARTIFACT_UNREADABLE
     assert result["pass_rate"] is None
     assert result["scorers"] == []
+
+
+def test_a_surrogate_in_an_artifact_does_not_cost_the_verdict(sink):
+    """Regression, found by driving the real server over stdio.
+
+    `score_run` returned a correct PASS and the SDK then failed to serialise
+    it, so what reached the model was "Error executing tool score_run" with no
+    verdict field -- the exact failure this package exists to prevent, one
+    layer further out than the rule is usually applied.
+    """
+    path = sink("run", {"scorers": []})
+    path.write_text('{"scorers":[{"name":"\\ud800","passed":true}]}', encoding="utf-8")
+    result = score_run("run")
+    assert result["verdict"] == PASS
+    # The real assertion: the whole envelope survives an encode to the wire.
+    json.dumps(result, ensure_ascii=False).encode("utf-8")
+
+
+def test_a_surrogate_in_an_artifact_key_does_not_cost_the_verdict(sink):
+    """`source_path` is assembled from artifact keys and is the one
+    externally-derived field that does not flow through `redact`."""
+    path = sink("run", {"scorers": []})
+    path.write_text('{"\\ud800":{"name":"s","passed":true}}', encoding="utf-8")
+    result = score_run("run")
+    json.dumps(result, ensure_ascii=False).encode("utf-8")
+
+
+def test_duplicate_verdict_keys_resolve_to_one_documented_answer(sink):
+    """JSON permits duplicate keys and Python keeps the last. Pinned rather
+    than left to be discovered: the surviving verdict is chosen by the parser,
+    so the behaviour should at least be written down."""
+    path = sink("run", {"scorers": []})
+    path.write_text('{"name":"s","passed":true,"passed":null}', encoding="utf-8")
+    result = score_run("run")
+    assert result["scorers"][0]["passed"] is None
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_NO_SCORED_RESULTS

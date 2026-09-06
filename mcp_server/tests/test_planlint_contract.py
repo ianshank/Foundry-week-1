@@ -474,3 +474,52 @@ def test_a_multibyte_payload_under_the_ceiling_still_parses(fake_planlint, confi
     result = lint_openspec(config=replace(load_planlint_config(), findings_max_bytes=4096))
     assert result["findings_truncated"] is False
     assert result["findings"] == {"m": "漢" * 10}
+
+
+@pytest.mark.parametrize("code", [3, 42, 126, 127, 255])
+def test_no_unmapped_exit_code_reaches_pass(fake_planlint, configured, code):
+    configured(fake_planlint(exit_code=code, stdout=""))
+    result = lint_openspec()
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_UNEXPECTED_EXIT
+    assert result["exit_code"] == code
+
+
+@pytest.mark.parametrize("signal_name", ["SIGKILL", "SIGSEGV"])
+def test_a_process_killed_by_a_signal_is_blocked_never_pass(
+    tmp_path, configured, fake_planlint, signal_name
+):
+    """A signal death reports a *negative* return code, and only 139 was ever
+    tested -- which is the shell's encoding, not Python's. `subprocess` gives
+    -11 for SIGSEGV, so the mapping was right by omission rather than intent.
+
+    Killed for real rather than simulated with `sys.exit(-11)`: those are
+    different things, and only the first produces a negative returncode.
+    """
+    # A distinct filename on purpose: `fake_planlint` writes to
+    # `bin/planlint`, so naming this the same silently overwrote it and the
+    # test measured the fixture instead of the signal. It passed for the wrong
+    # reason first time round.
+    script = tmp_path / "bin" / f"planlint-{signal_name.lower()}"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, signal\n"
+        f"os.kill(os.getpid(), signal.{signal_name})\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    configured(fake_planlint(exit_code=0))
+    result = lint_openspec(config=replace(load_planlint_config(), binary=str(script)))
+    assert result["exit_code"] is not None and result["exit_code"] < 0
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_UNEXPECTED_EXIT
+
+
+@pytest.mark.parametrize("code", [-11, -9, -15, 3, 42, 126, 127, 255, 1000])
+def test_the_exit_code_mapping_never_returns_pass_for_an_unknown_code(code):
+    from foundry_spike_mcp.verdicts import verdict_for_exit_code
+
+    verdict, reason = verdict_for_exit_code(code)
+    assert verdict == BLOCKED
+    assert reason == BLOCKED_UNEXPECTED_EXIT

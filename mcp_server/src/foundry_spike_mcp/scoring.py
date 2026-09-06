@@ -198,7 +198,7 @@ def _collect_scorers(
             if name is None:
                 ignored.append(
                     {
-                        "source_path": path,
+                        "source_path": guards.wire_safe(path),
                         "verdict_key": verdict_key,
                         "why": (
                             "an unnamed verdict field at the document root is a summary, "
@@ -218,7 +218,7 @@ def _collect_scorers(
                     {
                         "scorer": guards.redact(name),
                         "passed": _normalise_passed(node[verdict_key]),
-                        "source_path": path,
+                        "source_path": guards.wire_safe(path),
                         "named_by": "field" if explicit else "path",
                         "detail": guards.redact(detail) if isinstance(detail, str) else detail,
                     }

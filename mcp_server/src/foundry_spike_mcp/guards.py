@@ -74,11 +74,42 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\b(authorization)\s*[:=]\s*(?:\S+[ \t]+)?\S+"), r"\1: [REDACTED]"),
     # The same credential without a header around it. `verifier_probe` builds
     # exactly this string for its outbound header, so a transcript could carry
-    # it with no `authorization:` prefix to match on. Anchored to the two real
-    # HTTP auth schemes and to a credential-shaped run of at least 8 characters,
-    # so ordinary prose ("bearer of bad news") is left alone -- a rule broad
-    # enough to redact evidence is its own failure.
-    (re.compile(r"(?i)\b(bearer|basic)[ \t]+([A-Za-z0-9._\-+/=]{8,})"), r"\1 [REDACTED]"),
+    # it with no `authorization:` prefix to match on.
+    #
+    # The length floor alone was not enough, and a review caught it: "Basic
+    # implementation is required" and "bearer instrument reading" both matched,
+    # because English words are routinely longer than eight characters. A rule
+    # broad enough to redact evidence is its own failure, and this repository's
+    # evidence is prose about specifications.
+    #
+    # Two lookaheads separate a credential from a word. The token qualifies if
+    # it carries a digit or base64 punctuation, OR an uppercase letter anywhere
+    # after the first character. Between them they cover what real credentials
+    # look like while leaving prose alone:
+    #
+    #   dXNlcjpwYXNz     internal capitals      -> redacted (base64 of user:pass)
+    #   sk_live_9999     digits and underscores -> redacted
+    #   implementation   neither                -> left as evidence
+    #   Authentication   capital only at [0]    -> left as evidence
+    #
+    # The digit test alone was not enough: base64 is frequently all-alphabetic.
+    # The case test alone was not enough either: plenty of tokens are lowercase
+    # and numeric. A lowercase, all-alphabetic secret would still slip both,
+    # and that is the accepted cost -- under an `Authorization:` label the
+    # pattern above catches it regardless of shape.
+    (
+        # The case-insensitive flag is scoped to the scheme word alone. Applied
+        # to the whole pattern -- as it first was -- `(?i)` also folds the
+        # `[A-Z]` in the lookahead, so the mixed-case test silently matched any
+        # two letters and the over-redaction it was added to fix came straight
+        # back. An inert guard reads exactly like a working one.
+        re.compile(
+            r"\b((?i:bearer|basic))[ \t]+"
+            r"(?=[A-Za-z0-9._\-+/=]*[0-9._\-+/=]|[A-Za-z][A-Za-z0-9._\-+/=]*[A-Z])"
+            r"([A-Za-z0-9._\-+/=]{8,})"
+        ),
+        r"\1 [REDACTED]",
+    ),
     (
         re.compile(r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|APIKEY|API_KEY))\s*=\s*\S+"),
         r"\1=[REDACTED]",
@@ -213,13 +244,41 @@ def assert_safe_argv(argv: list[str]) -> None:
             raise GuardRejection("denied_flag", token)
 
 
+def wire_safe(text: str) -> str:
+    """Make a string encodable, so a good verdict is not lost to its own payload.
+
+    A lone surrogate is legal in a Python `str` and legal as a JSON escape --
+    `"\\ud800"` parses without complaint -- but it cannot be encoded to UTF-8.
+    The tool therefore produces a perfectly correct verdict that the transport
+    then fails to serialise, and what reaches the model is the SDK's
+    "Error executing tool" with no verdict field in it.
+
+    That is the failure this package exists to prevent, arriving one layer
+    further out than the rule is usually applied: it is not enough that
+    `score_run` does not raise, the thing it returns has to be deliverable.
+    Found by driving the real server over stdio; no in-process test can see it,
+    because in-process nothing ever encodes the result.
+
+    `backslashreplace` rather than `replace`: the reader gets `\\ud800` and can
+    see what was there, instead of a `?` that destroys the evidence silently.
+    """
+    if not text:
+        return text
+    return text.encode("utf-8", errors="backslashreplace").decode("utf-8")
+
+
 def redact(text: str) -> str:
-    """Strip recognisable credential shapes from anything bound for evidence."""
+    """Strip recognisable credential shapes from anything bound for evidence.
+
+    Also makes the result encodable. Every externally-derived string in a
+    result already flows through here, so this is the one place that guarantee
+    can be made once rather than remembered at each call site.
+    """
     if not text:
         return text
     for pattern, replacement in _SECRET_PATTERNS:
         text = pattern.sub(replacement, text)
-    return text
+    return wire_safe(text)
 
 
 def tail(text: str, limit: int) -> str:

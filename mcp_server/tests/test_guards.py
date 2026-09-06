@@ -364,18 +364,52 @@ def test_an_authorization_credential_does_not_survive_redaction(text, secret):
 @pytest.mark.parametrize(
     "evidence",
     [
+        # Short follow-on words. These were the only cases the first version of
+        # this test used, which is why it passed while the rule was wrong.
         "bearer of bad news",
         "the basic case",
+        "basic auth is described in the spec",
+        # Long follow-on words -- the gap a review found. English is routinely
+        # longer than the eight-character floor, so length alone proved nothing.
+        "Basic implementation is required",
+        "Basic authentication scheme",
+        "basic validation failed",
+        "bearer instrument reading",
+        "Basic Authentication is a scheme",
+        "a basic requirement document",
+        # Unrelated evidence that must survive intact.
         "rule G009 at line 42",
         "commit 4f2a1c9b",
-        "basic auth is described in the spec",
     ],
 )
 def test_ordinary_prose_is_not_redacted_as_a_credential(evidence):
-    """A rule broad enough to redact evidence is its own failure. `bearer` and
-    `basic` are English words as well as auth schemes, so the pattern requires
-    a credential-shaped run after them."""
+    """A rule broad enough to redact evidence is its own failure, and this
+    repository's evidence is prose about specifications.
+
+    Two rules were wrong here in succession and both looked right: an
+    eight-character floor that English clears easily, then a mixed-case test
+    made inert by a `(?i)` flag that folded its own `[A-Z]`. Hence the long
+    words below -- a guard that cannot fail is indistinguishable from one that
+    works.
+    """
     assert guards.redact(evidence) == evidence
+
+
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "Bearer abc123secretvalue",
+        "Bearer sk_live_9999999999",
+        "Basic dXNlcjpwYXNz",  # base64, all-alphabetic, internal capitals
+        "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ",
+        "BEARER ABC123XYZ789",
+        "Bearer eyJhbGci.eyJzdWIi.SflKxw",
+    ],
+)
+def test_a_bare_scheme_credential_is_still_caught(credential):
+    """The other direction, in the same test file, because tightening a rule
+    until prose survives is only half of it."""
+    assert "REDACTED" in guards.redact(credential)
 
 
 # --------------------------------------------------------------------------
@@ -410,3 +444,31 @@ def test_a_key_collision_stays_linear_on_adversarial_input():
     # Every key survives as its own entry: nothing was silently overwritten.
     assert len(redacted) == 4000
     assert not any(token in key for key in redacted)
+
+
+# --------------------------------------------------------------------------
+# Wire safety. A verdict that cannot be encoded never reaches the model, which
+# is the same outcome as not producing one.
+# --------------------------------------------------------------------------
+
+
+def test_a_lone_surrogate_is_made_encodable():
+    """Legal in a Python str, legal as a JSON escape, impossible in UTF-8.
+
+    `"\\ud800"` parses without complaint, so it arrives from an artifact
+    looking like ordinary text and only fails at the transport.
+    """
+    scrubbed = guards.wire_safe("name\ud800here")
+    scrubbed.encode("utf-8")  # the assertion: this must not raise
+    assert "ud800" in scrubbed  # backslashreplace keeps the evidence visible
+
+
+def test_redaction_also_makes_its_output_encodable():
+    """Every externally-derived string already flows through `redact`, so the
+    guarantee is made once there rather than remembered at each call site."""
+    guards.redact("token \ud800 here").encode("utf-8")
+
+
+@pytest.mark.parametrize("text", ["plain", "with spaces", "ünïcodé", "emoji 🙂", ""])
+def test_wire_safe_leaves_ordinary_text_alone(text):
+    assert guards.wire_safe(text) == text
