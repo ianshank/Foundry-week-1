@@ -382,7 +382,22 @@ def run_verb(
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            # Pinned, and non-raising. `text=True` alone decodes with the
+            # *locale* encoding and `errors="strict"`, so a subprocess emitting
+            # a byte the locale cannot decode raises `UnicodeDecodeError` out of
+            # `communicate` -- a `ValueError`, so the `except OSError` below
+            # does not catch it, and it escapes `lint_openspec` as a framework
+            # error with no verdict field.
+            #
+            # The module already had `_decode`, which exists to decode with
+            # replacement for exactly this reason. `text=True` made it dead
+            # code for the two streams that matter, because the decode happened
+            # inside `subprocess` before `_decode` ever saw the bytes. Found by
+            # a reviewer; my first attempt to reproduce it failed only because
+            # the fake binary emitted the literal text `\xff` rather than the
+            # byte.
+            encoding="utf-8",
+            errors="replace",
             start_new_session=_CAN_KILL_GROUPS,
         )
     except FileNotFoundError:

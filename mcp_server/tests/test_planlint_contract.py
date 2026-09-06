@@ -573,3 +573,32 @@ def test_a_timeout_reaps_the_whole_process_tree(tmp_path, configured, fake_planl
     while _alive() and time.monotonic() < deadline:
         time.sleep(0.1)
     assert _alive() == 0, "the grandchild outlived the timeout that killed its parent"
+
+
+def test_undecodable_bytes_on_stdout_are_a_verdict_not_an_exception(tmp_path, configured, fake_planlint):
+    """`text=True` alone decodes with the locale encoding and strict errors, so
+    a subprocess emitting a byte the locale cannot decode raised
+    `UnicodeDecodeError` out of `communicate` -- a `ValueError`, so the
+    `except OSError` did not catch it and it escaped `lint_openspec`.
+
+    The module already had `_decode`, which decodes with replacement for
+    exactly this reason; `text=True` made it dead code for the two streams that
+    matter, because the decode happened inside `subprocess` first.
+    """
+    script = tmp_path / "bin" / "planlint-raw-bytes"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        'sys.stdout.buffer.write(b"\\xff\\xfe\\xff")\n'
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    configured(fake_planlint(exit_code=0))
+    result = lint_openspec(config=replace(load_planlint_config(), binary=str(script)))
+    # The exit code is the verdict; undecodable bytes only downgrade evidence.
+    assert result["verdict"] == FINDINGS
+    assert result["exit_code"] == 1
+    assert result["findings"] is None
+    assert result["findings_parse_error"]

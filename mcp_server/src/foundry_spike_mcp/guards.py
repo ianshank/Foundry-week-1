@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 #: planlint verbs this wrapper is permitted to invoke. Read-only surface only:
 #: `init`, `new`, `witness` and `make` are absent on purpose.
@@ -52,102 +52,143 @@ DENIED_FLAGS = frozenset(
 #: when `assert_safe_argv` hunts for one.
 VALUE_OPTIONS = frozenset({"--target", "--fail-on", "--format", "--output"})
 
+
+class SecretRule(NamedTuple):
+    """One credential shape: how to find it, how to mask it, what to call it.
+
+    `kind` exists because this list has two consumers with different needs.
+    `redact` wants a replacement, and a good replacement often keeps context --
+    `\\1: [REDACTED]` preserves the header name that makes a redacted line
+    still readable. `scripts/scan_evidence.py` wants a *category* to report.
+    It used to derive one by string-scraping the replacement, which worked only
+    while every replacement happened to be a bare `[REDACTED:kind]` marker; the
+    backreference forms print as the literal `\\1: [REDACTED`, and this branch
+    added several more of them.
+
+    Two consumers, two fields, no scraping.
+    """
+
+    pattern: re.Pattern[str]
+    replacement: str
+    kind: str
+
+
 # Secret shapes worth catching before anything is written to an evidence file.
 # Prefix-anchored on purpose: a broad "long opaque string" rule would redact
 # git SHAs and rule IDs, which are the evidence.
-_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"), "[REDACTED:github-token]"),
-    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "[REDACTED:github-pat]"),
-    (re.compile(r"sk-[A-Za-z0-9_\-]{16,}"), "[REDACTED:api-key]"),
-    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:aws-key-id]"),
-    (re.compile(r"xox[abprs]-[A-Za-z0-9\-]{10,}"), "[REDACTED:slack-token]"),
-    (
+_SECRET_PATTERNS: tuple[SecretRule, ...] = (
+    SecretRule(re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"), "[REDACTED:github-token]", "github-token"),
+    SecretRule(
+        re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "[REDACTED:github-pat]", "github-pat"
+    ),
+    SecretRule(re.compile(r"sk-[A-Za-z0-9_\-]{16,}"), "[REDACTED:api-key]", "api-key"),
+    SecretRule(re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:aws-key-id]", "aws-key-id"),
+    SecretRule(
+        re.compile(r"xox[abprs]-[A-Za-z0-9\-]{10,}"), "[REDACTED:slack-token]", "slack-token"
+    ),
+    SecretRule(
         re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
         "[REDACTED:jwt]",
+        "jwt",
     ),
-    # Authorization headers. The value is optionally prefixed by a scheme, and
-    # the earlier form of this pattern consumed exactly one whitespace-delimited
-    # token after the separator -- which on the standard
-    # `Authorization: Bearer <token>` ate the word "Bearer" and left the
-    # credential itself in the evidence. It redacted the label and kept the
-    # secret. `(?:\S+[ \t]+)?` takes the scheme when one is present.
-    # `\s+` after the scheme, not `[ \t]+`. With a horizontal-only separator a
-    # wrapped header -- `Authorization: Bearer\n<token>` -- matched the scheme
-    # on the first line and left the credential on the second: the exact defect
-    # this rule was rewritten to close, back again for text that happens to be
-    # line-wrapped. Transcripts are full of wrapped headers.
-    (re.compile(r"(?i)\b(authorization)\s*[:=]\s*(?:\S+\s+)?\S+"), r"\1: [REDACTED]"),
-    # The same credential without a header around it. `verifier_probe` builds
-    # exactly this string for its outbound header, so a transcript could carry
-    # it with no `authorization:` prefix to match on.
+    # Authorization headers, in both the labelled and bare forms.
     #
-    # The length floor alone was not enough, and a review caught it: "Basic
-    # implementation is required" and "bearer instrument reading" both matched,
-    # because English words are routinely longer than eight characters. A rule
-    # broad enough to redact evidence is its own failure, and this repository's
-    # evidence is prose about specifications.
+    # Two defects lived here in succession, and both kept the secret. The first
+    # consumed one whitespace-delimited token after the separator, so on the
+    # standard `Authorization: Bearer <token>` it redacted the word "Bearer"
+    # and left the credential. The second fixed that but matched the scheme
+    # with `[ \t]+`, so a *wrapped* header put the credential on the next line
+    # and out of reach. `\s+` closes both.
+    SecretRule(
+        re.compile(r"(?i)\b(authorization)\s*[:=]\s*(?:\S+\s+)?\S+"),
+        r"\1: [REDACTED]",
+        "authorization-header",
+    ),
+    # The same credential with no header around it -- `verifier_probe` builds
+    # exactly this string for its outbound header.
     #
-    # Two lookaheads separate a credential from a word. The token qualifies if
-    # it carries a digit or base64 punctuation, OR an uppercase letter anywhere
-    # after the first character. Between them they cover what real credentials
-    # look like while leaving prose alone:
+    # Telling a credential from a word took three attempts. An eight-character
+    # floor was not enough, because English words routinely clear it: "Basic
+    # implementation is required" was redacted. A mixed-case test was not
+    # enough either, because `(?i)` on the whole pattern folded its own `[A-Z]`
+    # and made the test match any two letters -- an inert guard reads exactly
+    # like a working one. The flag is now scoped to the scheme word, and the
+    # token qualifies on a digit or base64 punctuation, or an uppercase letter
+    # after the first character:
     #
-    #   dXNlcjpwYXNz     internal capitals      -> redacted (base64 of user:pass)
+    #   dXNlcjpwYXNz     internal capitals      -> redacted (base64 user:pass)
     #   sk_live_9999     digits and underscores -> redacted
     #   implementation   neither                -> left as evidence
     #   Authentication   capital only at [0]    -> left as evidence
     #
-    # The digit test alone was not enough: base64 is frequently all-alphabetic.
-    # The case test alone was not enough either: plenty of tokens are lowercase
-    # and numeric. A lowercase, all-alphabetic secret would still slip both,
-    # and that is the accepted cost -- under an `Authorization:` label the
-    # pattern above catches it regardless of shape.
-    (
-        # The case-insensitive flag is scoped to the scheme word alone. Applied
-        # to the whole pattern -- as it first was -- `(?i)` also folds the
-        # `[A-Z]` in the lookahead, so the mixed-case test silently matched any
-        # two letters and the over-redaction it was added to fix came straight
-        # back. An inert guard reads exactly like a working one.
+    # A lowercase, all-alphabetic secret still slips this, and that is the
+    # accepted cost: under an `Authorization:` label the rule above catches it
+    # whatever its shape.
+    SecretRule(
         re.compile(
             r"\b((?i:bearer|basic))\s+"
             r"(?=[A-Za-z0-9._\-+/=]*[0-9._\-+/=]|[A-Za-z][A-Za-z0-9._\-+/=]*[A-Z])"
             r"([A-Za-z0-9._\-+/=]{8,})"
         ),
         r"\1 [REDACTED]",
+        "bare-auth-scheme",
     ),
-    (
+    SecretRule(
         re.compile(r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|APIKEY|API_KEY))\s*=\s*\S+"),
         r"\1=[REDACTED]",
+        "labelled-secret",
     ),
-    # Shapes with no rule at all until a security review went looking for them.
-    # This list gates commits as well as tool output -- `scan_evidence.py`
-    # scans with it and `promote_trace.py` refuses on a hit -- so a shape
-    # missing here is a shape that can be published from a public repository
-    # holding transcripts derived from private ones.
-    #
-    # Every one is prefix- or label-anchored, for the reason this block opens
-    # with: a general "long opaque string" rule would redact the git SHAs and
-    # rule identifiers that are the evidence.
-    (
+    # Shapes with no rule at all until a security review went looking. This
+    # list gates commits as well as tool output -- `scan_evidence.py` scans
+    # with it and `promote_trace.py` refuses on a hit -- so a shape missing
+    # here is one publishable from a public repository holding transcripts
+    # derived from private ones.
+    SecretRule(
         re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----"),
         "[REDACTED:private-key]",
+        "private-key",
     ),
     # Credentials embedded in a URL. Anchored on the scheme separator so it
     # cannot match a bare `host:port` or an ordinary `key: value` line.
-    (re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "://[REDACTED]@"),
-    (re.compile(r"(?i)\b(aws_secret_access_key)\s*[:=]\s*\S+"), r"\1=[REDACTED]"),
-    (re.compile(r"(?i)\bAccountKey=[A-Za-z0-9+/=]{16,}"), "AccountKey=[REDACTED]"),
-    (re.compile(r"\bglpat-[A-Za-z0-9_\-]{16,}"), "[REDACTED:gitlab-token]"),
-    (re.compile(r"https://hooks\.slack\.com/services/\S+"), "[REDACTED:slack-webhook]"),
-    (re.compile(r"\bAIza[A-Za-z0-9_\-]{30,}"), "[REDACTED:google-api-key]"),
+    SecretRule(re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "://[REDACTED]@", "url-basic-auth"),
+    SecretRule(
+        re.compile(r"(?i)\b(aws_secret_access_key)\s*[:=]\s*\S+"),
+        r"\1=[REDACTED]",
+        "aws-secret-key",
+    ),
+    SecretRule(
+        re.compile(r"(?i)\bAccountKey=[A-Za-z0-9+/=]{16,}"),
+        "AccountKey=[REDACTED]",
+        "azure-account-key",
+    ),
+    SecretRule(
+        re.compile(r"\bglpat-[A-Za-z0-9_\-]{16,}"), "[REDACTED:gitlab-token]", "gitlab-token"
+    ),
+    SecretRule(
+        re.compile(r"https://hooks\.slack\.com/services/\S+"),
+        "[REDACTED:slack-webhook]",
+        "slack-webhook",
+    ),
+    SecretRule(
+        re.compile(r"\bAIza[A-Za-z0-9_\-]{30,}"), "[REDACTED:google-api-key]", "google-api-key"
+    ),
     # The `sk-` rule above is hyphen-anchored and misses the underscore forms.
-    (re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{8,}"), "[REDACTED:stripe-key]"),
-    (re.compile(r"\bnpm_[A-Za-z0-9]{20,}"), "[REDACTED:npm-token]"),
-    (re.compile(r"\bhf_[A-Za-z0-9]{20,}"), "[REDACTED:huggingface-token]"),
-    (re.compile(r"\bpypi-[A-Za-z0-9_\-]{20,}"), "[REDACTED:pypi-token]"),
-    (
+    SecretRule(
+        re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{8,}"),
+        "[REDACTED:stripe-key]",
+        "stripe-key",
+    ),
+    SecretRule(re.compile(r"\bnpm_[A-Za-z0-9]{20,}"), "[REDACTED:npm-token]", "npm-token"),
+    SecretRule(
+        re.compile(r"\bhf_[A-Za-z0-9]{20,}"), "[REDACTED:huggingface-token]", "huggingface-token"
+    ),
+    SecretRule(
+        re.compile(r"\bpypi-[A-Za-z0-9_\-]{20,}"), "[REDACTED:pypi-token]", "pypi-token"
+    ),
+    SecretRule(
         re.compile(r"(?i)\b(x-api-key|api-key|cookie|proxy-authorization)\s*[:=]\s*\S+"),
         r"\1: [REDACTED]",
+        "credential-header",
     ),
 )
 
@@ -311,8 +352,8 @@ def redact(text: str) -> str:
     """
     if not text:
         return text
-    for pattern, replacement in _SECRET_PATTERNS:
-        text = pattern.sub(replacement, text)
+    for rule in _SECRET_PATTERNS:
+        text = rule.pattern.sub(rule.replacement, text)
     return wire_safe(text)
 
 

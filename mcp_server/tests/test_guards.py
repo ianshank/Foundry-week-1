@@ -581,3 +581,33 @@ def test_a_generated_suffix_never_overwrites_a_literal_key():
     redacted, _ = guards.redact_structure(payload, max_depth=8)
     assert len(redacted) == 3
     assert sorted(redacted.values()) == ["one", "three", "two"]
+
+
+# --------------------------------------------------------------------------
+# The scanner's category comes from the rule, not from its replacement text.
+# --------------------------------------------------------------------------
+
+
+def test_every_rule_carries_a_usable_category():
+    """`scripts/scan_evidence.py` reports `kind` to say what it found.
+
+    It used to derive that by stripping `[REDACTED:...]` out of the
+    replacement, which held only while every replacement was a bare marker.
+    The rules that keep context -- replacing with `\\1: [REDACTED]` so a
+    redacted header still names itself -- printed as the literal
+    `\\1: [REDACTED`, and this branch added several more of them.
+    """
+    assert guards.SECRET_PATTERNS, "expected at least one credential rule"
+    for rule in guards.SECRET_PATTERNS:
+        assert rule.kind, f"{rule.pattern.pattern[:40]} has no category"
+        assert rule.kind == rule.kind.strip(), f"{rule.kind!r} has stray whitespace"
+        # A category is a plain slug: no regex syntax, no marker punctuation.
+        assert not set(rule.kind) & set("\\[]:$"), (
+            f"{rule.kind!r} looks like it was scraped out of a replacement string"
+        )
+
+
+def test_rule_categories_are_unique():
+    """Two rules reporting the same category makes a scan result ambiguous."""
+    kinds = [rule.kind for rule in guards.SECRET_PATTERNS]
+    assert len(kinds) == len(set(kinds)), f"duplicate categories: {sorted(kinds)}"

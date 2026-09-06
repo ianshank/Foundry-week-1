@@ -65,10 +65,17 @@ def scan_file(path: Path) -> list[tuple[int, str, str]]:
 
     hits: list[tuple[int, str, str]] = []
     for number, line in enumerate(text.splitlines(), start=1):
-        for pattern, label in SECRET_PATTERNS:
-            if pattern.search(line):
+        for rule in SECRET_PATTERNS:
+            if rule.pattern.search(line):
                 # Report the shape and the location, never the value.
-                hits.append((number, label.strip("[]").replace("REDACTED:", ""), pattern.pattern[:48]))
+                #
+                # `rule.kind`, not a string scraped out of the replacement. The
+                # category used to be derived by stripping `[REDACTED:...]` off
+                # the replacement text, which held only while every replacement
+                # was a bare marker. The rules that keep context -- the ones
+                # replacing with `\1: [REDACTED]` so a redacted header still
+                # names its header -- printed as the literal `\1: [REDACTED`.
+                hits.append((number, rule.kind, rule.pattern.pattern[:48]))
     return hits
 
 
