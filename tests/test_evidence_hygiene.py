@@ -162,9 +162,9 @@ def test_every_allowlisted_path_still_exists():
     for pattern in config["allowlist"]["paths"]:
         compiled = re.compile(pattern)
         matched = any(
-            compiled.search(str(p.relative_to(repo)))
+            compiled.search(p.relative_to(repo).as_posix())
             for p in repo.rglob("*")
-            if p.is_file() and ".git/" not in str(p)
+            if p.is_file() and ".git/" not in p.as_posix()
         )
         assert matched, f"gitleaks allowlist pattern matches nothing: {pattern}"
 

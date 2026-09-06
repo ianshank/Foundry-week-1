@@ -1,0 +1,161 @@
+{
+  "cases": [
+    {
+      "case": "pass",
+      "target": "e:/Working+Directory/Agents",
+      "expected_verdict": "PASS",
+      "actual_verdict": "PASS",
+      "exit_code": 0,
+      "blocked_reason": null,
+      "matched": true,
+      "result": {
+        "verdict": "PASS",
+        "exit_code": 0,
+        "blocked_reason": null,
+        "blocked_detail": null,
+        "verb": "validate",
+        "target": "E:\\Working+Directory\\Agents",
+        "command": [
+          "E:/Coding_Projects/planlint/.venv-e2e/Scripts/planlint.exe",
+          "--target",
+          "E:\\Working+Directory\\Agents",
+          "validate",
+          "--fail-on",
+          "ERROR",
+          "--json"
+        ],
+        "duration_ms": 422,
+        "findings": {
+          "schema_version": 1,
+          "tool_version": "0.2.0",
+          "target": "E:\\Working+Directory\\Agents",
+          "specs_checked": 7,
+          "findings": [
+            {
+              "rule": "G009",
+              "severity": "WARN",
+              "message": "ADR-0001 is declared in docs/decisions but cited by no living spec",
+              "path": "docs/decisions",
+              "line": 0,
+              "subject": "ADR-0001"
+            },
+            {
+              "rule": "G009",
+              "severity": "WARN",
+              "message": "ADR-0002 is declared in docs/decisions but cited by no living spec",
+              "path": "docs/decisions",
+              "line": 0,
+              "subject": "ADR-0002"
+            },
+            {
+              "rule": "G009",
+              "severity": "WARN",
+              "message": "ADR-0003 is declared in docs/decisions but cited by no living spec",
+              "path": "docs/decisions",
+              "line": 0,
+              "subject": "ADR-0003"
+            },
+            {
+              "rule": "G009",
+              "severity": "WARN",
+              "message": "ADR-0027 is declared in docs/decisions but cited by no living spec",
+              "path": "docs/decisions",
+              "line": 0,
+              "subject": "ADR-0027"
+            }
+          ],
+          "blocking": 0
+        },
+        "findings_parse_error": null,
+        "stdout_excerpt": null,
+        "stderr": "",
+        "contract": {
+          "authority": "exit_code",
+          "verdict_derived_from": "exit_code",
+          "payload_role": "evidence_only"
+        }
+      }
+    },
+    {
+      "case": "findings",
+      "target": "e:/Coding_Projects/foundry_week1/bad_target",
+      "expected_verdict": "FINDINGS",
+      "actual_verdict": "PASS",
+      "exit_code": 0,
+      "blocked_reason": null,
+      "matched": false,
+      "result": {
+        "verdict": "PASS",
+        "exit_code": 0,
+        "blocked_reason": null,
+        "blocked_detail": null,
+        "verb": "validate",
+        "target": "E:\\Coding_Projects\\foundry_week1\\bad_target",
+        "command": [
+          "E:/Coding_Projects/planlint/.venv-e2e/Scripts/planlint.exe",
+          "--target",
+          "E:\\Coding_Projects\\foundry_week1\\bad_target",
+          "validate",
+          "--fail-on",
+          "ERROR",
+          "--json"
+        ],
+        "duration_ms": 313,
+        "findings": {
+          "schema_version": 1,
+          "tool_version": "0.2.0",
+          "target": "E:\\Coding_Projects\\foundry_week1\\bad_target",
+          "specs_checked": 0,
+          "findings": [],
+          "blocking": 0
+        },
+        "findings_parse_error": null,
+        "stdout_excerpt": null,
+        "stderr": "",
+        "contract": {
+          "authority": "exit_code",
+          "verdict_derived_from": "exit_code",
+          "payload_role": "evidence_only"
+        }
+      }
+    },
+    {
+      "case": "blocked",
+      "target": "C:\\Users\\iansh\\AppData\\Local\\Temp\\foundry-spike-blocked-zpfoxwvm",
+      "expected_verdict": "BLOCKED",
+      "actual_verdict": "BLOCKED",
+      "exit_code": 2,
+      "blocked_reason": "precondition_error",
+      "matched": true,
+      "result": {
+        "verdict": "BLOCKED",
+        "exit_code": 2,
+        "blocked_reason": "precondition_error",
+        "blocked_detail": null,
+        "verb": "validate",
+        "target": "C:\\Users\\iansh\\AppData\\Local\\Temp\\foundry-spike-blocked-zpfoxwvm",
+        "command": [
+          "E:/Coding_Projects/planlint/.venv-e2e/Scripts/planlint.exe",
+          "--target",
+          "C:\\Users\\iansh\\AppData\\Local\\Temp\\foundry-spike-blocked-zpfoxwvm",
+          "validate",
+          "--fail-on",
+          "ERROR",
+          "--json"
+        ],
+        "duration_ms": 327,
+        "findings": null,
+        "findings_parse_error": null,
+        "stdout_excerpt": null,
+        "stderr": "no openspec/ directory and no SpecKit specs/ tree; run ``planlint init`` first\n",
+        "contract": {
+          "authority": "exit_code",
+          "verdict_derived_from": "exit_code",
+          "payload_role": "evidence_only",
+          "note": "BLOCKED means the run could not form an opinion. It is not a spec failure and must never be reported as a pass."
+        }
+      }
+    }
+  ],
+  "all_expected": false
+}

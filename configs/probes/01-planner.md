@@ -28,5 +28,10 @@ something narrower than the requirement claims. Be specific about which line
 you are objecting to. Do not rewrite the proposal.
 
 ```markdown
-<<< PASTE proposal.md HERE >>>
+# Proposal: Add timeout configuration
+Requirement 1: The agent must timeout after 30 seconds.
+Requirement 2: The timeout must be configurable via the `AGENT_TIMEOUT` environment variable.
+
+Acceptance Criteria:
+- Verify that the agent stops execution after 30 seconds.
 ```

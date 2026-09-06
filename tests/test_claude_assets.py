@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -235,6 +236,7 @@ def test_every_hook_command_points_at_a_file_that_exists_and_runs():
         assert os.access(resolved, os.X_OK), f"hook script not executable: {script}"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="CRLF line endings on Windows break bash syntax check")
 def test_hook_scripts_are_syntactically_valid():
     import subprocess
 
@@ -242,11 +244,12 @@ def test_hook_scripts_are_syntactically_valid():
         if not script.is_file():
             continue
         proc = subprocess.run(
-            ["bash", "-n", str(script)], capture_output=True, text=True, check=False
+            ["bash", "-n", script.name], cwd=script.parent, capture_output=True, text=True, check=False
         )
         assert proc.returncode == 0, f"{script.name}: {proc.stderr}"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Executable permissions not checked natively on Windows")
 def test_git_hooks_are_executable():
     for script in sorted((REPO / ".githooks").glob("*")):
         mode = script.stat().st_mode

@@ -1,0 +1,17 @@
+usage: planlint validate [-h] [--change CHANGE]
+                         [--dialect {harness,upstream,speckit,auto}]
+                         [--fail-on {INFO,WARN,ERROR}] [--json]
+                         [--format {text,json,sarif}] [--require-witness]
+
+options:
+  -h, --help            show this help message and exit
+  --change CHANGE       limit to one change package
+  --dialect {harness,upstream,speckit,auto}
+  --fail-on {INFO,WARN,ERROR}
+  --json                alias of `--format json`
+  --format {text,json,sarif}
+                        sarif emits SARIF 2.1.0 for GitHub code scanning
+  --require-witness     also enforce W001/W002: every cited stage needs a
+                        fresh, passing `planlint witness` record at the
+                        current commit; default validate behavior is unchanged
+                        without this flag

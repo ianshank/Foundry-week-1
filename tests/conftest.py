@@ -30,7 +30,9 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, os.fspath(_REPO_ROOT / "mcp_server" / "src"))
+for _path in (_REPO_ROOT, _REPO_ROOT / "scripts", _REPO_ROOT / "mcp_server" / "src"):
+    if os.fspath(_path) not in sys.path:
+        sys.path.insert(0, os.fspath(_path))
 
 
 def _configured_env_names() -> tuple[str, ...]:

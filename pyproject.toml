@@ -55,8 +55,13 @@ ignore = [
 # The selfcheck CLI prints to stdout on purpose; it is not the server.
 "**/__main__.py" = ["T201"]
 
+[tool.pyright]
+extraPaths = ["mcp_server/src", "scripts", "."]
+
 [tool.mypy]
 python_version = "3.10"
+mypy_path = ["mcp_server/src", "."]
+explicit_package_bases = true
 files = ["mcp_server/src", "scripts"]
 # Not `strict`, and the gap is small enough to state exactly: `mypy --strict`
 # reports 3 errors, all defensible --
