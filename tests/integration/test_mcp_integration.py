@@ -1,4 +1,4 @@
-﻿"""Layer 2: Integration tests connecting MCP tools, file system, and probe pipelines.
+"""Layer 2: Integration tests connecting MCP tools, file system, and probe pipelines.
 
 sys.path is managed by pytest.ini pythonpath and tests/conftest.py.
 Fixtures make_stub and spec_repo are provided by tests/conftest.py.
