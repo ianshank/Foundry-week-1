@@ -25,7 +25,7 @@ SHELL_SCRIPTS := $(shell ls .githooks/* 2>/dev/null) \
 .PHONY: help setup hooks baseline test regression lint typecheck scan secrets \
         validate coverage selfcheck serve probe probe-blocked promote verdict \
         test-unit test-integration test-functional test-e2e test-journey \
-        test-security test-sanity test-7layers \
+        test-security test-sanity test-regression aqa test-7layers \
         shellcheck docker-test docker-transport docker-lint clean
 
 help: ## Show this help
@@ -71,6 +71,40 @@ regression: ## The suite with the SDK required -- what CI's transport job runs
 coverage: ## Run the suite under coverage and enforce the floor
 	$(PY) -m coverage run -m pytest -q
 	$(PY) -m coverage report
+
+# -------------------------------------------------- 7-layer test targets
+# Layer 1: unit, 2: integration, 3: functional, 4: e2e, 5: journey,
+# 6: security, 7: sanity. Plus regression (guard layer) and aqa.
+
+test-unit: ## Layer 1: unit tests
+	$(PYTEST) tests/unit/ -v
+
+test-integration: ## Layer 2: integration tests
+	$(PYTEST) tests/integration/ -v
+
+test-functional: ## Layer 3: functional tests
+	$(PYTEST) tests/functional/ -v
+
+test-e2e: ## Layer 4: end-to-end tests
+	$(PYTEST) tests/e2e/ -v
+
+test-journey: ## Layer 5: user journey tests
+	$(PYTEST) tests/journey/ -v
+
+test-security: ## Layer 6: security gate tests
+	$(PYTEST) tests/security/ -v
+
+test-sanity: ## Layer 7: sanity / environment checks
+	$(PYTEST) tests/sanity/ -v
+
+test-regression: ## Regression guard layer: fixed-defect guards (D-01/D-02, F4, F5, F9)
+	$(PYTEST) tests/regression/ -v
+
+aqa: ## AQA acceptance layer: tests marked with @pytest.mark.aqa
+	$(PYTEST) -m aqa -v
+
+test-7layers: test-unit test-integration test-functional test-e2e test-journey test-security test-sanity test-regression ## All 7 layers + regression guard in one shot
+
 
 scan: ## Credential pass over evidence/ traces/ snippets/ configs/ decisions/
 	$(PY) scripts/scan_evidence.py

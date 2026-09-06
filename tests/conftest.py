@@ -29,6 +29,7 @@ setting cannot be added without this isolation covering it.
 from __future__ import annotations
 
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -88,3 +89,63 @@ def restore_logging():
     logger.setLevel(saved_level)
     logger.propagate = saved_propagate
     logging_setup._configured = saved_flag
+
+
+# ---------------------------------------------------------------------------
+# Shared cross-platform test infrastructure
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def make_stub(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """Factory fixture — returns a callable that creates cross-platform executable stubs.
+
+    Usage::
+
+        def test_foo(make_stub, tmp_path):
+            stub = make_stub(
+                body='import sys; sys.stdout.buffer.write(b\'{"findings": []}\'); sys.exit(0)',
+                name="planlint",
+            )
+            # stub is a Path to a .bat on Windows, shebang script on POSIX
+
+    The factory always writes *body* to ``bin/<name>.py`` and produces a launcher
+    appropriate for the host OS.  All I/O in *body* must use
+    ``sys.stdout.buffer.write(bytes)`` rather than ``sys.stdout.write(str)`` so
+    the payload survives the Windows ``cp1252`` code page without a
+    ``UnicodeEncodeError``.
+    """
+
+    def _factory(body: str, name: str = "planlint") -> Path:
+        script_dir = tmp_path / "bin"
+        script_dir.mkdir(parents=True, exist_ok=True)
+        py_script = script_dir / f"{name}.py"
+        py_script.write_text(body, encoding="utf-8")
+        if sys.platform == "win32":
+            bat = script_dir / f"{name}.bat"
+            # PYTHONUTF8=1 forces UTF-8 stdio on Windows, avoiding cp1252 errors.
+            bat.write_text(f'@set PYTHONUTF8=1\r\n@"{sys.executable}" "{py_script}" %*')
+            return bat
+        sh = script_dir / name
+        sh.write_text(
+            f"#!/usr/bin/env {sys.executable}\n" + py_script.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        sh.chmod(sh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        return sh
+
+    return _factory
+
+
+@pytest.fixture()
+def spec_repo(tmp_path: Path) -> Path:
+    """A minimal planlint-compatible repository tree in ``tmp_path``.
+
+    Creates the directory structure that ``check_target`` and ``lint_openspec``
+    expect to find — ``openspec/changes/`` — so tests can pass a real filesystem
+    path rather than a fake string.
+
+    Returns the repo root (not the ``openspec/`` subdirectory).
+    """
+    root = tmp_path / "repo"
+    (root / "openspec" / "changes").mkdir(parents=True)
+    return root

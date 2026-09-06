@@ -25,14 +25,25 @@ concurrency:
 
 jobs:
   contract:
-    name: contract (no dependencies)
-    runs-on: ubuntu-latest
+    name: contract (${{ matrix.os }} / py${{ matrix.python-version }})
     strategy:
       fail-fast: false
       matrix:
         # 3.10 is the floor declared in mcp_server/pyproject.toml. If the suite
         # only passes on the newest interpreter, the floor is a lie.
-        python-version: ["3.10", "3.12"]
+        #
+        # windows-latest is added to catch platform-parity failures: all 12
+        # failures fixed in branch h were Windows-local (shebang WinError 193
+        # and cp1252 UnicodeEncodeError). Without a Windows leg, future
+        # regressions are invisible to CI.
+        include:
+          - os: ubuntu-latest
+            python-version: "3.10"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4.1.7
 
@@ -50,6 +61,10 @@ jobs:
         # Discovered, not listed. The three paths were hard-coded here, in the
         # Makefile and in the pre-commit hook, so a fourth script would have
         # been checked by none of them. `make shellcheck` runs the same set.
+        # Skipped on Windows: mapfile and bash -n are POSIX-only. The ubuntu
+        # leg already validates all shell scripts; the Windows leg's value is
+        # Python test execution parity, not shell syntax.
+        if: runner.os != 'Windows'
         run: |
           set -euo pipefail
           mapfile -t scripts < <(
@@ -138,9 +153,13 @@ jobs:
         # by writing tests shaped like coverage rather than tests shaped like
         # the contract. Five points is room to refactor without room to delete
         # a test file unnoticed.
+        # The floor is declared in pyproject.toml [tool.coverage.report]
+        # fail_under = 90. No --fail-under flag here: a hard-coded CLI floor
+        # silently overrides the pyproject.toml value and the two floors diverge.
+        # Let pyproject.toml be the single source of truth.
         run: |
           python -m coverage run --branch --source=mcp_server/src,scripts -m pytest -q
-          python -m coverage report --fail-under=80
+          python -m coverage report
 
   secrets:
     name: secrets
