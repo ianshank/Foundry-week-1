@@ -381,15 +381,20 @@ def test_an_unreadable_file_is_blocked_never_raised(sink, monkeypatch):
     assert "PermissionError" in result["blocked_detail"]
 
 
-def test_a_document_too_deep_to_parse_is_blocked_never_an_empty_pass(sink):
-    """The reachable half of the depth problem.
+def test_a_document_too_deep_to_read_is_blocked_never_an_empty_pass(sink):
+    """Deep nesting is BLOCKED whichever stack runs out first.
 
-    `score_run` also guards `_collect_scorers` against `RecursionError`. That
-    branch is deliberately left untested: measured on this interpreter,
-    `json.loads` exhausts the stack at a shallower depth than the walk does, so
-    no document reaches the walk deep enough to break it. The handler stays as
-    defence for another interpreter, but a test for it could only be written by
-    mocking the walk, and a test that mocks the thing under test proves nothing.
+    There are two depth limits here and which one trips is a property of the
+    interpreter build, not of this package: `json.loads` recurses in C, and
+    `_collect_scorers` recurses in Python. Locally the parse gives out first
+    and the detail says `RecursionError`; on CI the parse survives and the walk
+    gives out, and the detail says the walk could not follow it.
+
+    An earlier version of this test asserted the parse message and was red on
+    CI only -- coupling a contract test to a message string, which is exactly
+    the fragility this suite is supposed to avoid. What the contract actually
+    promises is the pair below: a refusal, and no exception. Both limits are
+    now covered, one on each interpreter.
     """
     path = sink("run", {"scorers": []})
     depth = 2_000
@@ -399,4 +404,5 @@ def test_a_document_too_deep_to_parse_is_blocked_never_an_empty_pass(sink):
     result = score_run("run")
     assert result["verdict"] == BLOCKED
     assert result["blocked_reason"] == BLOCKED_ARTIFACT_UNREADABLE
-    assert "RecursionError" in result["blocked_detail"]
+    assert result["pass_rate"] is None
+    assert result["scorers"] == []
