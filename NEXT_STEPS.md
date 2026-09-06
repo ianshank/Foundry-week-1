@@ -4,6 +4,14 @@ Rewritten 2026-09-06 against a four-discipline review of `main` and of the open
 pull request #5. The evidence behind every item is in
 [`docs/roadmap/2026-09-06-review.md`](docs/roadmap/2026-09-06-review.md).
 
+**Status: Tracks A and D are done.** Everything in them has landed with tests,
+along with two defects the work itself turned up: a sink artifact that is not
+valid UTF-8 raised out of `score_run`, and `redact_structure` silently dropped
+evidence when two credentials collided as dictionary keys. What is left is
+Track B, which is a decision about someone else's pull request, and Track C,
+which needs a human in front of VS Code with the real binaries. Neither can be
+done from here.
+
 ---
 
 ## Where this actually stands
@@ -32,10 +40,10 @@ credential path.
 
 | # | Action | Why | Owner |
 |---|---|---|---|
-| A1 | `.gitignore`: replace `mcp/mcp.json` with `mcp_server/mcp.json` and `**/mcp.json` | The directory was renamed; `git check-ignore mcp_server/mcp.json` returns nothing. The file the runbook tells you to fill with real paths and possibly a token is committable today. PR #5 does not fix this. | SWE |
-| A2 | Set the repository default branch to `main` | It is still `claude/foundry-toolkit-spike-prep-d92qfh`, the stale prep branch that PR #1 was merged *from*. | SWE |
-| A3 | Then close dependabot PRs #2, #3, #4 | All three target that stale branch, because `dependabot.yml` sets no `target-branch` and inherits the default. Merging them changes nothing on `main`. Once A2 lands they regenerate against the right base. | SWE |
-| A4 | Decide LICENSE, or make the repository private | Public with no licence is all-rights-reserved: nobody may reuse it, including a future you. PR #5 proposes MIT. This is the owner's call and it gates everything else about publishing captures. | VP / owner |
+| A1 | **Done.** `.gitignore` now matches `mcp.json` at any depth | The rule named the pre-rename path, so the file the runbook tells you to fill with real paths and possibly a token was committable. Matched by name now, so the next rename cannot reopen it, with a test over three locations. | SWE |
+| A2 | **Still open, and not doable from a commit.** Set the repository default branch to `main` | It is still `claude/foundry-toolkit-spike-prep-d92qfh`, the stale prep branch that PR #1 was merged *from*. | SWE |
+| A3 | **Still open.** Then close dependabot PRs #2, #3, #4 | All three target that stale branch, because `dependabot.yml` sets no `target-branch` and inherits the default. Merging them changes nothing on `main`. Once A2 lands they regenerate against the right base. | SWE |
+| A4 | **Still open, and yours.** Decide LICENSE, or make the repository private | Public with no licence is all-rights-reserved: nobody may reuse it, including a future you. PR #5 proposes MIT. This is the owner's call and it gates everything else about publishing captures. | VP / owner |
 
 A2 is the root cause of A3 and was already flagged in the previous revision of
 this file. It is still open, and it means every new pull request opened without
@@ -157,9 +165,9 @@ and all of them sit on code that would carry into a hosted week 2.
 
 | # | Defect | Fix | Effort |
 |---|---|---|---|
-| D1 | A NUL byte in a model-supplied path escapes `lint_openspec` and `score_run` as `ValueError`, so the model sees a protocol error with no verdict field | Catch `ValueError` in `guards.check_target`, map to `BLOCKED / guard_rejected: invalid_path` | 30 min |
-| D2 | A findings payload that parses as valid JSON is neither truncated nor redacted; both controls live in the unparsable branch only | Bound and redact the parsed payload; set a `findings_truncated` flag | 30 min |
-| D3 | `scripts/scan_evidence.py` on an absolute path outside the repository ends in a traceback | Handle the out-of-tree case | 20 min |
+| D1 | **Done.** A NUL byte in a model-supplied path escaped both tools as `ValueError` | Caught in `guards.check_target` and mapped to `BLOCKED / guard_rejected: invalid_path`. The same call in `config._abs_paths` escaped every `except ConfigError` and is now a `ConfigError` | landed |
+| D2 | **Done.** A findings payload that parsed as valid JSON was neither truncated nor redacted | Bounded on the encoded byte length before parsing, then redacted structurally; `findings_truncated` added to every envelope | landed |
+| D3 | **Done.** `scan_evidence.py` ended in a traceback on an absolute out-of-tree path | One reusable display helper: relative inside the repo, absolute outside. Still fails closed | landed |
 
 D1 is the only true contract breach on the list: it is the single place where
 *an exception is not a verdict* does not hold.
@@ -184,16 +192,16 @@ another reason to land Track B1 promptly.
 
 Two more, cheap:
 
-- **D5 — Test that policy is not configuration.** This is the repository's one
+- **D5 — Done. Policy is not configuration, now tested.** This is the repository's one
   stated architectural opinion and it has no test. A parametrized test that sets
   plausible environment variables and asserts the refusals are unchanged, plus a
   static check that `guards.py` imports no `os`, is about ten lines. *(SQE, 20
   min.)*
-- **D6 — Add `coverage`, `ruff` and `mypy` to the `[dev]` extras.** The extras
+- **D6 — Done. `coverage`, `ruff` and `mypy` added to the `[dev]` extras.** The extras
   list is just `pytest`, so `make validate` is red immediately after `make
   setup` on a fresh clone, on three counts. CI installs all three separately,
   which is how this survived. *(SWE, 5 min.)*
-- **D7 — Reconcile the declared SDK floor with what is tested.** `mcp>=1.2` is
+- **D7 — Done. The declared SDK floor is now exercised.** `mcp>=1.2` is
   advertised, but the smoke suite resolves a 2.x module path at import time, so
   on mcp 1.2.0 it errors during collection under `REQUIRE_MCP=1` and skips
   silently without it. Either fix the loader test and add a 1.x leg to CI, or
@@ -268,19 +276,21 @@ Replaces the previous table, which recorded several items as fixed that are not.
 | `traces/` has no index | **Fixed on PR #5**, not on `main` |
 | No session tracker | **Fixed on PR #5**, not on `main` |
 | Evidence cites gitignored paths | **Drift, not a risk.** The template points at `traces/raw/`, which is gitignored by design; the runbook says to promote captures out of it before citing them |
-| `mcp.json` is gitignored | **False, and a live risk.** See A1 |
-| `make scan` reaches `snippets/` | **Fixed in code, stale in `snippets/README.md`**, which still says the opposite |
-| NUL byte escapes as an exception | **Open.** See D1 |
-| Findings payload unbounded and unredacted | **Open.** See D3 |
-| Declared SDK floor `mcp>=1.2` cannot run its own smoke suite | **Open.** See D7 |
-| Scanner crashes out of tree | **Open.** See D4 |
-| "Policy is not configuration" untested | **Open.** See D5 |
-| `make validate` red after `make setup` | **Open.** See D6 |
-| Outcome vocabulary differs across three documents | **Open.** Keep / bench-only / drop, versus proceed / stop at bench, versus sidecar or not |
-| Criterion 4 has no field in the verdict template | **Open.** See C5 |
+| `mcp.json` is gitignored | **Now true.** See A1 |
+| `make scan` reaches `snippets/` | **Fixed**, and `snippets/README.md` no longer says the opposite |
+| NUL byte escapes as an exception | **Fixed.** See D1 |
+| Findings payload unbounded and unredacted | **Fixed.** See D2 |
+| Declared SDK floor `mcp>=1.2` cannot run its own smoke suite | **Fixed.** See D7 |
+| Scanner crashes out of tree | **Fixed.** See D3 |
+| "Policy is not configuration" untested | **Fixed.** See D5 |
+| `make validate` red after `make setup` | **Fixed.** See D6 |
+| Outcome vocabulary differs across three documents | **Fixed.** All three now say keep as sidecar / bench only / drop |
+| Criterion 4 has no field in the verdict template | **Fixed.** Section 2b asks for two timings and a named baseline |
 | Actions on floating major tags | **Open, accepted** |
 | No dependency lockfile | **Open, accepted** |
 | TOCTOU between check and subprocess | **Open, accepted** |
+| A sink artifact that is not valid UTF-8 raised out of `score_run` | **Fixed.** Found while testing D1; `UnicodeDecodeError` is a sibling of `JSONDecodeError`, not a parent |
+| `redact_structure` dropped evidence on a key collision | **Fixed.** Found by the contract review of the D2 commit |
 
 ---
 

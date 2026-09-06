@@ -9,5 +9,7 @@ Nothing here is imported by anything. It is a diff preview for a week-2
 decision that has not been made, and it stays that way until
 `evidence/05-verdict.md` says otherwise.
 
-Strip any token before committing — `make scan` does not reach this directory
-by default, so run `python3 scripts/scan_evidence.py snippets` on it explicitly.
+Strip any token before committing. `make scan` covers this directory by
+default — `snippets/` is in the scanner's `DEFAULT_TARGETS`, because a gate
+with a written-down hole is not a gate, and generated snippet output is exactly
+where a provider token turns up.

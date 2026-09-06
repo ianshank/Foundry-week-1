@@ -1,7 +1,8 @@
 # Foundry Toolkit spike — week 1
 
 A throwaway repo for one question: **does the Foundry Toolkit earn a place as a
-sidecar to the existing harness, or not?**
+sidecar to the existing harness?** Three answers are allowed — keep as sidecar,
+bench only, or drop — and `decisions/0001` spells them.
 
 Five sessions, local only, zero Azure spend, ending in a written verdict. The
 week counts as a success if it stops early on a stop condition, and fails only
