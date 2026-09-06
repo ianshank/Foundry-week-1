@@ -46,11 +46,26 @@ def display(path: Path) -> str:
     script advertises positional targets. Pointing the gate at a staging
     directory before exporting it -- the one use that most needs a gate -- ended
     in a traceback rather than a scan.
+
+    Resolved first, because `relative_to` compares *syntax*. Without this,
+    `REPO / "../outside"` printed as `../outside` and `traces/../../etc` printed
+    as though it sat under the repo -- so "inside or outside" depended on how
+    the target was spelled rather than on where it actually is. An operator
+    reading this output is deciding whether an export is clean; the one thing
+    it must not do is misreport where a hit was found.
+
+    Resolution itself can fail -- a NUL byte in an argument raises `ValueError`,
+    a symlink loop `OSError` -- and a gate that crashes is a gate that gets
+    skipped, so an unresolvable path falls back to what the caller passed.
     """
     try:
-        return str(path.relative_to(REPO))
-    except ValueError:
+        resolved = path.resolve()
+    except (ValueError, OSError):
         return str(path)
+    try:
+        return str(resolved.relative_to(REPO))
+    except ValueError:
+        return str(resolved)
 
 
 def scan_file(path: Path) -> list[tuple[int, str, str]]:

@@ -274,6 +274,37 @@ def test_a_path_inside_the_repo_is_still_shown_relative():
     assert display(REPO / "evidence" / "x.md") == str(Path("evidence") / "x.md")
 
 
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param(REPO / ".." / "outside", id="parent-of-repo"),
+        pytest.param(REPO / "traces" / ".." / ".." / "etc", id="climbs-back-out"),
+        pytest.param(REPO / "evidence" / ".." / ".." / "elsewhere" / "x.md", id="deeper-climb"),
+    ],
+)
+def test_a_path_that_only_looks_local_is_shown_as_where_it_really_is(spelling):
+    """`relative_to` compares syntax, so a target spelled with `..` printed as
+    though it sat in the repo: `REPO / "../outside"` came out as `../outside`
+    and `traces/../../etc` as `traces/../../etc`, both indistinguishable from a
+    real repo-relative path in the scan output.
+
+    An operator reads this output to decide whether an export is clean. A gate
+    that misreports *where* it found a credential is worse than one that misses
+    it, because it sends the fix to the wrong file.
+    """
+    shown = display(spelling)
+    assert Path(shown).is_absolute(), f"{shown!r} reads as repo-relative but resolves outside it"
+    assert shown == str(spelling.resolve())
+
+
+def test_display_survives_a_path_that_cannot_be_resolved():
+    """Resolution is what makes the check above honest, and resolution can
+    raise -- a NUL byte is a `ValueError`. A gate that crashes gets skipped, so
+    an unresolvable path falls back to what the caller passed rather than
+    taking the whole scan down."""
+    assert display(Path("nul\x00byte")) == "nul\x00byte"
+
+
 def test_a_clean_directory_outside_the_repo_scans_and_passes(tmp_path, capsys):
     (tmp_path / "notes.md").write_text("a rule id, not a secret: SPEC001\n", encoding="utf-8")
     assert main([str(tmp_path)]) == 0
