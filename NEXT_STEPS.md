@@ -4,13 +4,42 @@ Rewritten 2026-09-06 against a four-discipline review of `main` and of the open
 pull request #5. The evidence behind every item is in
 [`docs/roadmap/2026-09-06-review.md`](docs/roadmap/2026-09-06-review.md).
 
-**Status: Tracks A and D are done.** Everything in them has landed with tests,
-along with two defects the work itself turned up: a sink artifact that is not
-valid UTF-8 raised out of `score_run`, and `redact_structure` silently dropped
-evidence when two credentials collided as dictionary keys. What is left is
-Track B, which is a decision about someone else's pull request, and Track C,
-which needs a human in front of VS Code with the real binaries. Neither can be
-done from here.
+**Status: Tracks A, D, and E are done.** Track E (Windows platform-parity,
+branch `h`) closed 12 test failures that were Windows-local and invisible to CI.
+It also established the regression guard layer and shared cross-platform test
+fixtures. What is left is Track B, which is a decision about someone else's pull
+request, and Track C, which needs a human in front of VS Code with the real
+binaries. Neither can be done from here.
+
+---
+
+## Track E — Windows platform-parity (branch h, complete 2026-09-06)
+
+Branch `h` closed 12 test failures that existed on Windows but were invisible to
+the Linux-only CI. The root causes and their fixes:
+
+| ID | Root cause | Fix |
+|---|---|---|
+| D-01 | Shebang scripts are not executable on Windows (`WinError 193`) | `.bat` launchers on Windows, shebang on POSIX; encapsulated in `make_stub` fixture |
+| D-02a/b | `sys.stdout.write(str)` raises `UnicodeEncodeError` on Windows `cp1252` | All fake scripts write to `sys.stdout.buffer`; `.bat` sets `PYTHONUTF8=1` |
+| D-02c | POSIX-signal tests used `os.kill(pid, SIGKILL)` which raises on Windows | `@pytest.mark.skipif(win32)` with rationale and coverage note |
+| D-03 | `mypy` `attr-defined` on `os.killpg` (runtime-guarded but mypy can't track `hasattr`) | `# type: ignore[attr-defined]` with explanatory comment |
+
+**Deliverables that landed:**
+
+- `tests/regression/` — 16-test regression guard layer (verbs from `ALLOWED_VERBS`, not hardcoded)
+- `tests/conftest.py` — `make_stub` and `spec_repo` shared fixtures (DRY, single source of truth)
+- `pytest.ini` — `regression` and `aqa` markers registered
+- `Makefile` — `test-regression`, `aqa`, `test-7layers` and all 7 individual layer targets
+- `.github/workflows/ci.yml` — `windows-latest` in `contract` job matrix; coverage floor uses `pyproject.toml`
+- `CHANGELOG.md` — full entry for D-01/D-02/D-03 and the new deliverables
+
+**Open items from E (low priority):**
+
+| # | Item | Owner |
+|---|---|---|
+| E1 | Add `tests/aqa/` acceptance test layer (AQA marker is registered but no tests yet) | SQE |
+| E2 | Consider adding Windows to the `transport` job (SDK + server startup on Windows) | SWE |
 
 ---
 

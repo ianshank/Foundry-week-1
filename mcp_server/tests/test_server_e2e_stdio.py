@@ -186,24 +186,41 @@ def _tool_payload(response: dict[str, Any]) -> dict[str, Any]:
 
 @pytest.fixture
 def stub_planlint(tmp_path: Path):
-    """A planlint stand-in, so the E2E path exercises a real subprocess.
+    """A planlint stand-in that works on all platforms including Windows.
 
     The tool spawns a process; mocking that out would leave the interesting
-    half of the wire untested.
+    half of the wire untested. On Windows, shebang lines are not executable,
+    so a .bat launcher is created instead. The script writes to
+    sys.stdout.buffer (binary, UTF-8) to avoid cp1252 encoding failures
+    when non-ASCII payloads are tested.
     """
 
     def _make(*, exit_code: int, stdout: str) -> Path:
-        script = tmp_path / "bin" / "planlint"
-        script.parent.mkdir(parents=True, exist_ok=True)
-        script.write_text(
-            "#!/usr/bin/env python3\n"
+        script_dir = tmp_path / "bin"
+        script_dir.mkdir(parents=True, exist_ok=True)
+        py_script = script_dir / "planlint.py"
+        # Write to the binary stdout buffer to bypass Windows cp1252 locale
+        # encoding; planlint.py reads back streams with encoding='utf-8'.
+        py_script.write_text(
             "import sys\n"
-            f"sys.stdout.write({stdout!r})\n"
+            f"sys.stdout.buffer.write({stdout.encode('utf-8')!r})\n"
+            "sys.stdout.buffer.flush()\n"
             f"sys.exit({exit_code!r})\n",
             encoding="utf-8",
         )
-        script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        return script
+        if sys.platform == "win32":
+            # Shebang lines are not executable on Windows. A .bat launcher
+            # delegates to sys.executable so the path is always valid.
+            bat = script_dir / "planlint.bat"
+            bat.write_text(f'@set PYTHONUTF8=1\r\n@"{sys.executable}" "{py_script}" %*')
+            return bat
+        sh = script_dir / "planlint"
+        sh.write_text(
+            f"#!/usr/bin/env {sys.executable}\n" + py_script.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        sh.chmod(sh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        return sh
 
     return _make
 

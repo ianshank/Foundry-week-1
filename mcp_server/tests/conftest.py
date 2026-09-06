@@ -48,19 +48,34 @@ def fake_planlint(tmp_path: Path):
         script = tmp_path / "bin" / name
         script.parent.mkdir(parents=True, exist_ok=True)
         py_script = tmp_path / "bin" / f"{name}.py"
+        # Use sys.stdout.buffer.write to bypass the platform's default text
+        # encoding (cp1252 on Windows). Tests may pass non-ASCII payloads such
+        # as CJK characters, and sys.stdout on Windows defaults to the locale
+        # encoding, which cannot represent them. Writing to the binary buffer
+        # with explicit UTF-8 works everywhere and matches how planlint.py
+        # reads back the stream: encoding="utf-8", errors="replace" on Popen.
         py_script.write_text(
             "import sys, time\n"
             f"time.sleep({sleep!r})\n"
-            f"sys.stdout.write({stdout!r})\n"
-            f"sys.stderr.write({stderr!r})\n"
+            f"sys.stdout.buffer.write({stdout.encode('utf-8')!r})\n"
+            f"sys.stdout.buffer.flush()\n"
+            f"sys.stderr.buffer.write({stderr.encode('utf-8')!r})\n"
+            f"sys.stderr.buffer.flush()\n"
             f"sys.exit({exit_code!r})\n",
             encoding="utf-8",
         )
         if sys.platform == "win32":
             bat_script = tmp_path / "bin" / f"{name}.bat"
-            bat_script.write_text(f'@"{sys.executable}" "{py_script}" %*')
+            # PYTHONUTF8=1 is not needed here because we write to the binary
+            # buffer directly; it is set anyway for defensive consistency.
+            bat_script.write_text(
+                f'@set PYTHONUTF8=1\r\n@"{sys.executable}" "{py_script}" %*'
+            )
             return bat_script
-        script.write_text(f"#!/usr/bin/env {sys.executable}\n" + py_script.read_text(), encoding="utf-8")
+        script.write_text(
+            f"#!/usr/bin/env {sys.executable}\n" + py_script.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
         script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         return script
 
