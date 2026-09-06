@@ -37,6 +37,7 @@ paths = [
   '''mcp_server/tests/test_guards\.py$''',
   '''mcp_server/tests/test_planlint_contract\.py$''',
   '''tests/test_evidence_hygiene\.py$''',
+  '''tests/security/test_security_gates\.py$''',
   # mcp.json.example carries ALLCAPS placeholders, not values.
   '''mcp_server/mcp\.json\.example$''',
 ]

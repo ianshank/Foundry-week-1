@@ -28,6 +28,11 @@ __pycache__/
 dist/
 build/
 .DS_Store
+.eval-runs/
+bad_target/
+mock_findings/
+mock_pass/
+scratch/
 
 # Docs are not needed to run the suite, and excluding them keeps a docs-only
 # edit from invalidating the layer cache.

@@ -17,6 +17,7 @@ RUN := PYTHONPATH=$(SRC) $(PY)
 
 .DEFAULT_GOAL := help
 .PHONY: help setup hooks baseline test regression lint typecheck scan validate \
+        test-unit test-integration test-functional test-e2e test-journey test-security test-sanity test-7layers \
         coverage selfcheck serve probe probe-blocked promote verdict \
         docker-test docker-transport docker-lint clean
 
@@ -53,12 +54,35 @@ typecheck: ## mypy over mcp_server/src and scripts
 test: ## The full suite (contract + smoke; smoke skips without the SDK)
 	$(PYTEST)
 
+test-unit: ## Layer 1: Unit tests
+	$(PYTEST) tests/unit mcp_server/tests
+
+test-integration: ## Layer 2: Integration tests
+	$(PYTEST) tests/integration
+
+test-functional: ## Layer 3: Functional tests
+	$(PYTEST) tests/functional
+
+test-e2e: ## Layer 4: End-to-end CLI tests
+	$(PYTEST) tests/e2e
+
+test-journey: ## Layer 5: Developer workflow journey tests
+	$(PYTEST) tests/journey
+
+test-security: ## Layer 6: Security and fuzzing tests
+	$(PYTEST) tests/security
+
+test-sanity: ## Layer 7: Environment and smoke sanity tests
+	$(PYTEST) tests/sanity
+
+test-7layers: test-unit test-integration test-functional test-e2e test-journey test-security test-sanity ## Run all 7 layers sequentially
+
 regression: ## The suite with the SDK required -- what CI's transport job runs
 	REQUIRE_MCP=1 $(PYTEST)
 
-coverage: ## Run the suite under coverage and enforce the floor
-	$(PY) -m coverage run -m pytest -q
-	$(PY) -m coverage report
+coverage: ## Run the suite under coverage and enforce the 80% floor
+	$(PY) -m coverage run --branch --source=mcp_server/src,scripts -m pytest -q
+	$(PY) -m coverage report --fail-under=80
 
 scan: ## Credential pass over evidence/ traces/ snippets/ configs/ decisions/
 	$(PY) scripts/scan_evidence.py

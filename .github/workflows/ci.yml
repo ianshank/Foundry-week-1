@@ -34,9 +34,9 @@ jobs:
         # only passes on the newest interpreter, the floor is a lie.
         python-version: ["3.10", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5.1.1
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -53,9 +53,9 @@ jobs:
     name: transport (SDK installed)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5.1.1
         with:
           python-version: "3.12"
 
@@ -73,9 +73,9 @@ jobs:
     name: quality (lint + types)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5.1.1
         with:
           python-version: "3.12"
 
@@ -93,20 +93,20 @@ jobs:
         # with nothing installed. The floor stops 91% from rotting; it does not
         # claim the tests are good, only that they still exist.
         run: |
-          python -m coverage run -m pytest -q
-          python -m coverage report
+          python -m coverage run --branch --source=mcp_server/src,scripts -m pytest -q
+          python -m coverage report --fail-under=80
 
   secrets:
     name: secrets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.7
         with:
           # gitleaks scans history, so a shallow clone would only ever see the
           # tip and miss a credential added and removed in an earlier commit.
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5.1.1
         with:
           python-version: "3.12"
 
@@ -114,7 +114,7 @@ jobs:
         run: python scripts/scan_evidence.py
 
       - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v2.3.6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml

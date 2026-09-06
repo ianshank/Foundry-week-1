@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "languages": [
+    "python"
+  ],
+  "make_targets": [
+    "build",
+    "check",
+    "check-agent-core",
+    "check-all",
+    "check-behavioral-regression",
+    "check-claude-foundation",
+    "check-flow-corpus",
+    "check-flow-protocol",
+    "clean",
+    "clean-all",
+    "coverage",
+    "determinism",
+    "e2e-matrix",
+    "e2e-matrix-check",
+    "e2e-matrix-update",
+    "format",
+    "help",
+    "install",
+    "install-all",
+    "invariants",
+    "lint",
+    "matrix-check",
+    "matrix-update",
+    "pre-pr",
+    "test",
+    "typecheck"
+  ],
+  "has_openspec_root": true,
+  "change_dirs": [
+    "add-measurement-harness-wedge",
+    "add-panel-judge",
+    "add-production-eval-flywheel",
+    "add-repeat-reliability-metrics",
+    "add-stateful-outcome-evaluation",
+    "archive",
+    "extend-judge-calibration"
+  ],
+  "dialect": "upstream",
+  "threshold": {
+    "locator": "pyproject.toml:[tool.coverage.report].fail_under",
+    "value": 96
+  },
+  "invariant_source": null,
+  "invariant_ids": [],
+  "has_project_md": true,
+  "make_target_confidence": "high",
+  "make_unresolved_count": 0,
+  "adr_source": "docs/decisions",
+  "adr_ids": [
+    "ADR-0001",
+    "ADR-0002",
+    "ADR-0003",
+    "ADR-0027"
+  ],
+  "has_speckit_root": false,
+  "feature_dirs": []
+}
