@@ -1,7 +1,8 @@
 # Foundry Toolkit spike — week 1
 
 A throwaway repo for one question: **does the Foundry Toolkit earn a place as a
-sidecar to the existing harness, or not?**
+sidecar to the existing harness?** Three answers are allowed — keep as sidecar,
+bench only, or drop — and `decisions/0001` spells them.
 
 Five sessions, local only, zero Azure spend, ending in a written verdict. The
 week counts as a success if it stops early on a stop condition, and fails only
@@ -41,7 +42,7 @@ set -a; source .env; set +a
 
 make setup      # venv + the MCP server + linters
 make hooks      # git pre-commit gate (secret scan, gitleaks, lint)
-make validate   # ruff, mypy, 7-layer test suite, coverage gate, secret pass -- run before any PR
+make validate   # ruff, mypy, the layered suite under coverage, the secret pass -- before any PR
 make baseline   # session 1: version stamp, dialect card, baseline exit codes
 ```
 
@@ -64,12 +65,15 @@ configs/probes/             system prompt + bake-off fixtures + the four agent p
 mcp_server/                 the two read-only MCP tools, and their contract tests
   src/foundry_spike_mcp/
     verdicts.py             PASS / FINDINGS / BLOCKED -- the only vocabulary
-    guards.py               POLICY: verb + flag allow lists, path containment (hard-coded)
+    guards.py               POLICY: verb + flag allow lists, path containment,
+                            secret patterns, structural redaction (hard-coded)
     config.py               CONFIG: paths, timeouts, limits (from the environment)
-    planlint.py             run_verb -- the single guarded execution point
+    planlint.py             run_verb -- the single guarded execution point;
+                            the findings payload is bounded before it is parsed
     scoring.py              score_run -- true / false / null preserved
     logging_setup.py        stderr-only structured logging
     server.py               transport only; supports mcp 1.x and 2.x
+    __main__.py             `serve`, and the `selfcheck` step 3 exits on
 
 scripts/
   00-baseline.sh            step 0 evidence capture (records exit codes, never aborts on one)
@@ -77,6 +81,9 @@ scripts/
   probe/                    modular verifier probe package (cli, runner, screen, client, config)
   scan_evidence.py          the secret gate
   promote_trace.py          raw capture -> tracked evidence, only if it scans clean
+tests/                      what the repo asserts about itself: the .claude assets,
+                            the CLI entry points, evidence hygiene, the verifier screen,
+                            and the layered suites that landed with the probe split
 
 tests/                      enterprise 7-layer test suite (94% coverage)
   unit/                     Layer 1: modular component unit tests
@@ -101,11 +108,14 @@ snippets/                   step 4.5 adapter candidate, parked and unmerged
 ## What is already built, and what is not
 
 **Built and tested:** both MCP tools, their refusals, the three-valued
-contract, the stdio server, the evidence templates, and a headless verifier
-probe. `make test` proves the verdict logic with no external dependencies at
-all, and — once `make setup` has installed the SDK — starts the server and
-checks both tools register. CI runs those as separate jobs, because a suite
-that needs nothing installed cannot tell you whether the transport works.
+contract, the bounded and redacted evidence path behind it, the stdio server,
+the evidence templates, and a headless verifier probe. `make test` proves the
+verdict logic with no external dependencies at all, and — once `make setup` has
+installed the SDK — starts the server and checks both tools register. CI runs
+those as separate jobs, because a suite that needs nothing installed cannot
+tell you whether the transport works, and it runs the transport job at both
+ends of the declared `mcp` range, because a floor nothing installs is a claim
+rather than a constraint.
 
 **Not built, because it cannot be:** every judgement call. Loading four models,
 reading four Playground cells, deciding which model laundered a failure,

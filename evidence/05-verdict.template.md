@@ -45,6 +45,33 @@ the tool is correct. Only the traces show whether a model preserved it.
 
 ---
 
+## 2b. Was the Playground actually faster than the existing bench?
+
+Criterion 4 of `decisions/0001`, which had no field here until a review noticed
+the decision record calls it the criterion "most likely to be answered
+generously" — and then gave it nowhere to be answered at all.
+
+Answer it with two timings on **one** candidate model, not an impression.
+
+| | Existing bench | Foundry Playground |
+|---|---|---|
+| Named baseline used | | |
+| Wall clock, model chosen → verifier verdict recorded | | |
+| Wall clock, model chosen → first-token latency recorded | | |
+| Wall clock, model chosen → peak VRAM recorded | | n/a for hosted slots |
+
+**What did the Playground give you that the bench cannot?**
+
+<!-- The honest answer may be "the local resource profile, and nothing else".
+     That is still a finding, and it is a smaller one than "faster". -->
+
+**Verdict on criterion 4:** met / not met / not measured
+
+<!-- "Not measured" is an allowed answer and a better one than a guess. It
+     means the comparative claim does not appear in section 5. -->
+
+---
+
 ## 3. Did any probe require weakening the tool contract?
 
 > If yes, that is a stop signal, not a tuning task.
@@ -84,9 +111,31 @@ the tool is correct. Only the traces show whether a model preserved it.
 
 ## 5. Recommendation
 
-**One line:** proceed to a Week 2 hosted twin / stop at local bake-off bench.
+One of exactly three, spelled as `decisions/0001` spells them. This document
+and that one used to offer different vocabularies, which made it possible to
+answer a question neither of them had asked.
+
+**One line:** keep as sidecar / bench only / drop
+
+<!-- keep as sidecar  proceed to a week-2 hosted twin; section 6 is then a
+                     budget request, not a note.
+     bench only       the Playground earns a place as a local bake-off bench,
+                      and Foundry adds nothing to governance. Stop condition 1
+                      or an unmet criterion 4 lands here.
+     drop             it adds nothing the existing bench does not.
+
+     Two of these three end the week early and the week still counts as a
+     success. Only an unwritten verdict is a failure. -->
 
 **Because:**
+
+<!-- Cite the sections above by number. A recommendation that does not rest on
+     a filled-in row is the failure mode this repository exists to detect. -->
+
+**Claims this recommendation does NOT rest on:**
+
+<!-- List every row above answered "not measured" or left blank. Being explicit
+     about what was not established is what makes the rest of it credible. -->
 
 ---
 
@@ -115,4 +164,4 @@ Copy into `decisions/0001-foundry-toolkit-week1.md` and set its status.
 
 | Date | Decision | Status | Evidence |
 |---|---|---|---|
-| | Foundry Toolkit: keep as sidecar / drop | | `evidence/` |
+| | Foundry Toolkit: keep as sidecar / bench only / drop | | `evidence/` |

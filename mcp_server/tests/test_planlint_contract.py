@@ -8,10 +8,15 @@ verdict.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import time
+from dataclasses import replace
 
 import pytest
 
-from foundry_spike_mcp.planlint import lint_openspec
+from foundry_spike_mcp.config import load_planlint_config
+from foundry_spike_mcp.planlint import detect_dialect, lint_openspec
 from foundry_spike_mcp.verdicts import (
     BLOCKED,
     BLOCKED_GUARD_REJECTED,
@@ -215,6 +220,143 @@ def test_deeply_nested_stdout_does_not_raise(fake_planlint, configured):
 
 
 # --------------------------------------------------------------------------
+# A path the operating system cannot represent.
+#
+# `Path.resolve` raises rather than returning, and the argument is supplied by
+# a model. Uncaught, the model gets a framework error with no verdict field --
+# the one outcome this package exists to prevent.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_target",
+    [
+        pytest.param("{root}/spec\x00.md", id="nul-byte"),
+        pytest.param("{root}/\x00", id="nul-only-segment"),
+    ],
+)
+def test_a_path_the_os_cannot_represent_is_blocked_never_raised(
+    fake_planlint, configured, bad_target
+):
+    root = configured(fake_planlint(exit_code=0, stdout="{}"))
+    result = lint_openspec(target=bad_target.format(root=root))
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_GUARD_REJECTED
+    assert "invalid_path" in result["blocked_detail"]
+    # No process ran, so there is no exit code to report. BLOCKED with a null
+    # exit code is the refusal shape, not a missing field.
+    assert result["exit_code"] is None
+
+
+def test_the_refusal_does_not_echo_the_malformed_path_back(fake_planlint, configured):
+    """A NUL pasted into the result is a second problem on top of the first:
+    the detail is serialised into JSON that a model and a trace both read."""
+    root = configured(fake_planlint(exit_code=0, stdout="{}"))
+    result = lint_openspec(target=f"{root}/spec\x00.md")
+    assert "\x00" not in json.dumps(result)
+
+
+# --------------------------------------------------------------------------
+# The payload is evidence, and evidence is bounded and redacted.
+#
+# Both controls previously lived only in the branch that FAILED to parse, so
+# the common case -- valid JSON -- routed straight past them.
+# --------------------------------------------------------------------------
+
+
+def test_an_oversized_payload_is_refused_without_changing_the_verdict(fake_planlint, configured):
+    configured(
+        fake_planlint(exit_code=1, stdout=FINDINGS_JSON),
+        FOUNDRY_SPIKE_FINDINGS_MAX_BYTES="10",
+    )
+    result = lint_openspec()
+    # The exit code is the verdict. A payload too large to hand back downgrades
+    # the evidence and must not turn FINDINGS into anything else.
+    assert result["verdict"] == FINDINGS
+    assert result["exit_code"] == 1
+    assert result["findings_truncated"] is True
+    assert result["findings"] is None
+    assert "over the 10 byte findings limit" in result["findings_parse_error"]
+    # The evidence is downgraded, not destroyed: an excerpt still reaches the
+    # caller so a human can see what was dropped.
+    assert result["stdout_excerpt"]
+
+
+def test_the_findings_limit_is_configuration_not_a_constant(fake_planlint, configured):
+    """The same payload passes or is refused purely on the configured ceiling."""
+    configured(
+        fake_planlint(exit_code=1, stdout=FINDINGS_JSON),
+        FOUNDRY_SPIKE_FINDINGS_MAX_BYTES=str(len(FINDINGS_JSON) + 1),
+    )
+    kept = lint_openspec()
+    assert kept["findings_truncated"] is False
+    assert kept["findings"] is not None
+
+    configured(
+        fake_planlint(exit_code=1, stdout=FINDINGS_JSON),
+        FOUNDRY_SPIKE_FINDINGS_MAX_BYTES=str(len(FINDINGS_JSON) - 1),
+    )
+    assert lint_openspec()["findings_truncated"] is True
+
+
+def test_a_credential_inside_valid_json_is_redacted(fake_planlint, configured):
+    """The gap this closes: redaction ran only on unparsable stdout, so a token
+    inside a payload that parsed went back to the model verbatim."""
+    token = "ghp_" + "A" * 36
+    configured(
+        fake_planlint(
+            exit_code=1,
+            stdout=json.dumps({"findings": [{"rule": "R1", "message": f"leaked {token}"}]}),
+        )
+    )
+    result = lint_openspec()
+    assert result["verdict"] == FINDINGS
+    serialised = json.dumps(result["findings"])
+    assert token not in serialised
+    assert "[REDACTED:github-token]" in serialised
+
+
+def test_redaction_preserves_the_structure_it_redacts(fake_planlint, configured):
+    """Redacting the raw JSON text instead would be simpler and wrong: the
+    authorization pattern consumes to the next whitespace, eating the closing
+    quote and leaving text that no longer parses."""
+    configured(
+        fake_planlint(
+            exit_code=1,
+            stdout=json.dumps(
+                {"findings": [{"rule": "R1", "message": "authorization: Bearer abc123"}]}
+            ),
+        )
+    )
+    result = lint_openspec()
+    assert isinstance(result["findings"], dict)
+    finding = result["findings"]["findings"][0]
+    assert finding["rule"] == "R1"
+    assert "abc123" not in finding["message"]
+    assert "[REDACTED]" in finding["message"]
+
+
+def test_nothing_truncated_reports_false_rather_than_null(fake_planlint, configured):
+    """A caller branching on this key must never have to treat null as a third
+    state. On a path where no payload was read, nothing was truncated."""
+    configured(fake_planlint(exit_code=0, stdout=json.dumps({"findings": []})))
+    assert lint_openspec()["findings_truncated"] is False
+    # Refused before any process started: still false, never null.
+    assert lint_openspec(target="relative/path")["findings_truncated"] is False
+
+
+def test_an_injected_config_overrides_the_environment(fake_planlint, configured):
+    """`config=` exists so in-process callers can vary settings without mutating
+    os.environ, which is global and has bitten this repository once already."""
+    configured(fake_planlint(exit_code=1, stdout=FINDINGS_JSON))
+    injected = replace(load_planlint_config(), findings_max_bytes=1)
+    assert lint_openspec(config=injected)["findings_truncated"] is True
+    # The environment was never touched to achieve that, so the very next call
+    # with no injected config still sees the configured ceiling.
+    assert lint_openspec()["findings_truncated"] is False
+
+
+# --------------------------------------------------------------------------
 # Copilot review, PR #1. The JSON flag is whatever spelling session 1 finds in
 # `validate --help`, and `00-baseline.sh` reports `--format` as a candidate.
 # Appending it whole passed a single argv token "--format json", which planlint
@@ -250,3 +392,213 @@ def test_a_multi_token_flag_does_not_confuse_the_verb_check(fake_planlint, confi
     result = lint_openspec()
     assert result["verdict"] == FINDINGS
     assert result["blocked_reason"] is None
+
+
+# --------------------------------------------------------------------------
+# Execution failures after the pre-flight check passed. These were correct and
+# unpinned: the `shutil.which` probe catches an absent binary, so everything
+# below is the case where a binary exists and still cannot be run.
+# --------------------------------------------------------------------------
+
+
+def test_a_binary_that_cannot_be_executed_is_blocked_not_crashed(
+    tmp_path, configured, fake_planlint
+):
+    """A directory passes the pre-flight existence check and then fails at
+    `execve`. That handler was reachable and untested.
+
+    A shebang pointing at nothing does *not* get here, which is worth writing
+    down: on ENOEXEC `subprocess` retries through `/bin/sh`, so a file with an
+    unusable interpreter runs as a shell script and can exit 0. The pre-flight
+    check plus this branch are what stand between that and a fabricated PASS.
+    """
+    directory = tmp_path / "not-a-binary"
+    directory.mkdir()
+    configured(fake_planlint(exit_code=0))
+    result = lint_openspec(config=replace(load_planlint_config(), binary=str(directory)))
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] in {"process_error", BLOCKED_TOOL_NOT_FOUND}
+    assert result["exit_code"] is None
+
+
+def test_a_parsed_payload_never_overrides_the_exit_code(fake_planlint, configured):
+    """`verdicts.py` states it and nothing tested it. planlint exiting 0 while
+    printing findings is a planlint bug; reporting it as FINDINGS would make
+    this wrapper's verdict depend on a payload, which is the inversion the
+    whole contract forbids."""
+    configured(fake_planlint(exit_code=0, stdout=FINDINGS_JSON))
+    result = lint_openspec()
+    assert result["verdict"] == PASS
+    assert result["exit_code"] == 0
+    # The payload is still handed back as evidence, unaltered.
+    assert result["findings"]["findings"][0]["rule"] == "SPEC001"
+
+
+def test_an_empty_findings_list_on_exit_one_is_still_findings(fake_planlint, configured):
+    """The mirror image. An empty payload does not soften a nonzero exit."""
+    configured(fake_planlint(exit_code=1, stdout=json.dumps({"findings": []})))
+    assert lint_openspec()["verdict"] == FINDINGS
+
+
+def test_detect_dialect_goes_through_the_same_guarded_path(fake_planlint, configured):
+    """`detect` is in the allow list, so it must be reachable. It had no test,
+    which is how a verb list comes to advertise something that cannot run."""
+    configured(fake_planlint(exit_code=0, stdout=json.dumps({"dialect": "openspec"})))
+    result = detect_dialect()
+    assert result["verdict"] == PASS
+    assert result["verb"] == "detect"
+    assert result["findings"] == {"dialect": "openspec"}
+
+
+def test_detect_dialect_refuses_a_target_outside_the_allow_list(fake_planlint, configured):
+    configured(fake_planlint(exit_code=0, stdout="{}"))
+    result = detect_dialect(target="/etc")
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_GUARD_REJECTED
+
+
+def test_the_findings_ceiling_is_measured_in_bytes_not_characters(fake_planlint, configured):
+    """Contract review finding. `stdout` arrives decoded, so a character count
+    let a multi-byte payload through a ceiling named in bytes: 100 CJK
+    characters are 300 UTF-8 bytes."""
+    payload = json.dumps({"m": "漢" * 100}, ensure_ascii=False)
+    assert len(payload) < 200 < len(payload.encode("utf-8"))
+    configured(fake_planlint(exit_code=1, stdout=payload))
+    result = lint_openspec(config=replace(load_planlint_config(), findings_max_bytes=200))
+    assert result["findings_truncated"] is True
+    assert result["verdict"] == FINDINGS
+    # And the reported size is the byte count, matching the setting's units.
+    assert f"{len(payload.encode('utf-8'))} bytes" in result["findings_parse_error"]
+
+
+def test_a_multibyte_payload_under_the_ceiling_still_parses(fake_planlint, configured):
+    payload = json.dumps({"m": "漢" * 10}, ensure_ascii=False)
+    configured(fake_planlint(exit_code=1, stdout=payload))
+    result = lint_openspec(config=replace(load_planlint_config(), findings_max_bytes=4096))
+    assert result["findings_truncated"] is False
+    assert result["findings"] == {"m": "漢" * 10}
+
+
+@pytest.mark.parametrize("code", [3, 42, 126, 127, 255])
+def test_no_unmapped_exit_code_reaches_pass(fake_planlint, configured, code):
+    configured(fake_planlint(exit_code=code, stdout=""))
+    result = lint_openspec()
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_UNEXPECTED_EXIT
+    assert result["exit_code"] == code
+
+
+@pytest.mark.parametrize("signal_name", ["SIGKILL", "SIGSEGV"])
+def test_a_process_killed_by_a_signal_is_blocked_never_pass(
+    tmp_path, configured, fake_planlint, signal_name
+):
+    """A signal death reports a *negative* return code, and only 139 was ever
+    tested -- which is the shell's encoding, not Python's. `subprocess` gives
+    -11 for SIGSEGV, so the mapping was right by omission rather than intent.
+
+    Killed for real rather than simulated with `sys.exit(-11)`: those are
+    different things, and only the first produces a negative returncode.
+    """
+    # A distinct filename on purpose: `fake_planlint` writes to
+    # `bin/planlint`, so naming this the same silently overwrote it and the
+    # test measured the fixture instead of the signal. It passed for the wrong
+    # reason first time round.
+    script = tmp_path / "bin" / f"planlint-{signal_name.lower()}"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, signal\n"
+        f"os.kill(os.getpid(), signal.{signal_name})\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    configured(fake_planlint(exit_code=0))
+    result = lint_openspec(config=replace(load_planlint_config(), binary=str(script)))
+    assert result["exit_code"] is not None and result["exit_code"] < 0
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_UNEXPECTED_EXIT
+
+
+@pytest.mark.parametrize("code", [-11, -9, -15, 3, 42, 126, 127, 255, 1000])
+def test_the_exit_code_mapping_never_returns_pass_for_an_unknown_code(code):
+    from foundry_spike_mcp.verdicts import verdict_for_exit_code
+
+    verdict, reason = verdict_for_exit_code(code)
+    assert verdict == BLOCKED
+    assert reason == BLOCKED_UNEXPECTED_EXIT
+
+
+def test_an_unparseable_json_flag_is_blocked_not_raised(fake_planlint, configured):
+    """`shlex.split` raises on an unbalanced quote, and the value comes from the
+    environment. `PLANLINT_JSON_FLAG='\"'` sent a bare ValueError out of
+    `run_verb` -- a framework error with no verdict field, reached through the
+    one setting the module spends nine lines explaining how to get right."""
+    configured(fake_planlint(exit_code=0, stdout="{}"), PLANLINT_JSON_FLAG='"')
+    result = lint_openspec()
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == "configuration_error"
+    assert "PLANLINT_JSON_FLAG" in result["blocked_detail"]
+
+
+def test_a_timeout_reaps_the_whole_process_tree(tmp_path, configured, fake_planlint):
+    """`subprocess.run(timeout=)` kills the direct child only, so a wrapper
+    that starts a worker leaked that worker on every timeout -- holding the
+    stdout pipe and accumulating for the life of the server.
+
+    The grandchild is given a distinctive name so the assertion cannot match
+    this test's own process or the harness's.
+    """
+    if not hasattr(os, "killpg"):  # pragma: no cover - Windows
+        pytest.skip("process groups are POSIX-only")
+
+    marker = "ZZ_FOUNDRY_GRANDCHILD_ZZ"
+    script = tmp_path / "bin" / "planlint-tree"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        f"#!/bin/sh\nsh -c 'exec -a {marker} sleep 45' &\nsleep 45\n", encoding="utf-8"
+    )
+    script.chmod(0o755)
+
+    def _alive() -> int:
+        listing = subprocess.run(["ps", "-eo", "comm"], capture_output=True, text=True, check=False)
+        return sum(1 for line in listing.stdout.splitlines() if line.strip() == marker)
+
+    assert _alive() == 0, "a previous run leaked; the assertion below would be meaningless"
+    configured(fake_planlint(exit_code=0), PLANLINT_TIMEOUT="1")
+    result = lint_openspec(config=replace(load_planlint_config(), binary=str(script)))
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_TIMEOUT
+
+    deadline = time.monotonic() + 10
+    while _alive() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert _alive() == 0, "the grandchild outlived the timeout that killed its parent"
+
+
+def test_undecodable_bytes_on_stdout_are_a_verdict_not_an_exception(tmp_path, configured, fake_planlint):
+    """`text=True` alone decodes with the locale encoding and strict errors, so
+    a subprocess emitting a byte the locale cannot decode raised
+    `UnicodeDecodeError` out of `communicate` -- a `ValueError`, so the
+    `except OSError` did not catch it and it escaped `lint_openspec`.
+
+    The module already had `_decode`, which decodes with replacement for
+    exactly this reason; `text=True` made it dead code for the two streams that
+    matter, because the decode happened inside `subprocess` first.
+    """
+    script = tmp_path / "bin" / "planlint-raw-bytes"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        'sys.stdout.buffer.write(b"\\xff\\xfe\\xff")\n'
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    configured(fake_planlint(exit_code=0))
+    result = lint_openspec(config=replace(load_planlint_config(), binary=str(script)))
+    # The exit code is the verdict; undecodable bytes only downgrade evidence.
+    assert result["verdict"] == FINDINGS
+    assert result["exit_code"] == 1
+    assert result["findings"] is None
+    assert result["findings_parse_error"]

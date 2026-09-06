@@ -16,8 +16,10 @@ what this tool may execute should require a code change, a review and a test.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
+from typing import Any, NamedTuple
 
 #: planlint verbs this wrapper is permitted to invoke. Read-only surface only:
 #: `init`, `new`, `witness` and `make` are absent on purpose.
@@ -50,23 +52,143 @@ DENIED_FLAGS = frozenset(
 #: when `assert_safe_argv` hunts for one.
 VALUE_OPTIONS = frozenset({"--target", "--fail-on", "--format", "--output"})
 
+
+class SecretRule(NamedTuple):
+    """One credential shape: how to find it, how to mask it, what to call it.
+
+    `kind` exists because this list has two consumers with different needs.
+    `redact` wants a replacement, and a good replacement often keeps context --
+    `\\1: [REDACTED]` preserves the header name that makes a redacted line
+    still readable. `scripts/scan_evidence.py` wants a *category* to report.
+    It used to derive one by string-scraping the replacement, which worked only
+    while every replacement happened to be a bare `[REDACTED:kind]` marker; the
+    backreference forms print as the literal `\\1: [REDACTED`, and this branch
+    added several more of them.
+
+    Two consumers, two fields, no scraping.
+    """
+
+    pattern: re.Pattern[str]
+    replacement: str
+    kind: str
+
+
 # Secret shapes worth catching before anything is written to an evidence file.
 # Prefix-anchored on purpose: a broad "long opaque string" rule would redact
 # git SHAs and rule IDs, which are the evidence.
-_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"), "[REDACTED:github-token]"),
-    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "[REDACTED:github-pat]"),
-    (re.compile(r"sk-[A-Za-z0-9_\-]{16,}"), "[REDACTED:api-key]"),
-    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:aws-key-id]"),
-    (re.compile(r"xox[abprs]-[A-Za-z0-9\-]{10,}"), "[REDACTED:slack-token]"),
-    (
+_SECRET_PATTERNS: tuple[SecretRule, ...] = (
+    SecretRule(re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"), "[REDACTED:github-token]", "github-token"),
+    SecretRule(
+        re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "[REDACTED:github-pat]", "github-pat"
+    ),
+    SecretRule(re.compile(r"sk-[A-Za-z0-9_\-]{16,}"), "[REDACTED:api-key]", "api-key"),
+    SecretRule(re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:aws-key-id]", "aws-key-id"),
+    SecretRule(
+        re.compile(r"xox[abprs]-[A-Za-z0-9\-]{10,}"), "[REDACTED:slack-token]", "slack-token"
+    ),
+    SecretRule(
         re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
         "[REDACTED:jwt]",
+        "jwt",
     ),
-    (re.compile(r"(?i)\b(authorization|bearer)\s*[:=]\s*\S+"), r"\1: [REDACTED]"),
-    (
+    # Authorization headers, in both the labelled and bare forms.
+    #
+    # Two defects lived here in succession, and both kept the secret. The first
+    # consumed one whitespace-delimited token after the separator, so on the
+    # standard `Authorization: Bearer <token>` it redacted the word "Bearer"
+    # and left the credential. The second fixed that but matched the scheme
+    # with `[ \t]+`, so a *wrapped* header put the credential on the next line
+    # and out of reach. `\s+` closes both.
+    SecretRule(
+        re.compile(r"(?i)\b(authorization)\s*[:=]\s*(?:\S+\s+)?\S+"),
+        r"\1: [REDACTED]",
+        "authorization-header",
+    ),
+    # The same credential with no header around it -- `verifier_probe` builds
+    # exactly this string for its outbound header.
+    #
+    # Telling a credential from a word took three attempts. An eight-character
+    # floor was not enough, because English words routinely clear it: "Basic
+    # implementation is required" was redacted. A mixed-case test was not
+    # enough either, because `(?i)` on the whole pattern folded its own `[A-Z]`
+    # and made the test match any two letters -- an inert guard reads exactly
+    # like a working one. The flag is now scoped to the scheme word, and the
+    # token qualifies on a digit or base64 punctuation, or an uppercase letter
+    # after the first character:
+    #
+    #   dXNlcjpwYXNz     internal capitals      -> redacted (base64 user:pass)
+    #   sk_live_9999     digits and underscores -> redacted
+    #   implementation   neither                -> left as evidence
+    #   Authentication   capital only at [0]    -> left as evidence
+    #
+    # A lowercase, all-alphabetic secret still slips this, and that is the
+    # accepted cost: under an `Authorization:` label the rule above catches it
+    # whatever its shape.
+    SecretRule(
+        re.compile(
+            r"\b((?i:bearer|basic))\s+"
+            r"(?=[A-Za-z0-9._\-+/=]*[0-9._\-+/=]|[A-Za-z][A-Za-z0-9._\-+/=]*[A-Z])"
+            r"([A-Za-z0-9._\-+/=]{8,})"
+        ),
+        r"\1 [REDACTED]",
+        "bare-auth-scheme",
+    ),
+    SecretRule(
         re.compile(r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|APIKEY|API_KEY))\s*=\s*\S+"),
         r"\1=[REDACTED]",
+        "labelled-secret",
+    ),
+    # Shapes with no rule at all until a security review went looking. This
+    # list gates commits as well as tool output -- `scan_evidence.py` scans
+    # with it and `promote_trace.py` refuses on a hit -- so a shape missing
+    # here is one publishable from a public repository holding transcripts
+    # derived from private ones.
+    SecretRule(
+        re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----"),
+        "[REDACTED:private-key]",
+        "private-key",
+    ),
+    # Credentials embedded in a URL. Anchored on the scheme separator so it
+    # cannot match a bare `host:port` or an ordinary `key: value` line.
+    SecretRule(re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "://[REDACTED]@", "url-basic-auth"),
+    SecretRule(
+        re.compile(r"(?i)\b(aws_secret_access_key)\s*[:=]\s*\S+"),
+        r"\1=[REDACTED]",
+        "aws-secret-key",
+    ),
+    SecretRule(
+        re.compile(r"(?i)\bAccountKey=[A-Za-z0-9+/=]{16,}"),
+        "AccountKey=[REDACTED]",
+        "azure-account-key",
+    ),
+    SecretRule(
+        re.compile(r"\bglpat-[A-Za-z0-9_\-]{16,}"), "[REDACTED:gitlab-token]", "gitlab-token"
+    ),
+    SecretRule(
+        re.compile(r"https://hooks\.slack\.com/services/\S+"),
+        "[REDACTED:slack-webhook]",
+        "slack-webhook",
+    ),
+    SecretRule(
+        re.compile(r"\bAIza[A-Za-z0-9_\-]{30,}"), "[REDACTED:google-api-key]", "google-api-key"
+    ),
+    # The `sk-` rule above is hyphen-anchored and misses the underscore forms.
+    SecretRule(
+        re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{8,}"),
+        "[REDACTED:stripe-key]",
+        "stripe-key",
+    ),
+    SecretRule(re.compile(r"\bnpm_[A-Za-z0-9]{20,}"), "[REDACTED:npm-token]", "npm-token"),
+    SecretRule(
+        re.compile(r"\bhf_[A-Za-z0-9]{20,}"), "[REDACTED:huggingface-token]", "huggingface-token"
+    ),
+    SecretRule(
+        re.compile(r"\bpypi-[A-Za-z0-9_\-]{20,}"), "[REDACTED:pypi-token]", "pypi-token"
+    ),
+    SecretRule(
+        re.compile(r"(?i)\b(x-api-key|api-key|cookie|proxy-authorization)\s*[:=]\s*\S+"),
+        r"\1: [REDACTED]",
+        "credential-header",
     ),
 )
 
@@ -74,6 +196,15 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 #: keeping its own -- two definitions of "what a secret looks like" drift, and
 #: the one that drifts is always the one in the script nobody reads.
 SECRET_PATTERNS = _SECRET_PATTERNS
+
+#: Rejection reason for a path the operating system cannot represent. Named
+#: because two modules raise it and the tests assert on it; the older reasons
+#: are literals only because they each have a single call site.
+REJECT_INVALID_PATH = "invalid_path"
+
+#: Stands in for a subtree that nests deeper than `redact_structure` will walk.
+#: A marker rather than a silent drop: evidence that was removed should say so.
+DEPTH_LIMIT_MARKER = "[...nested deeper than the redaction walk follows...]"
 
 
 class GuardRejection(Exception):
@@ -115,7 +246,19 @@ def check_target(
     candidate = Path(target).expanduser()
     if not candidate.is_absolute():
         raise GuardRejection("relative_target", target)
-    resolved = candidate.resolve(strict=False)
+    try:
+        resolved = candidate.resolve(strict=False)
+    except (ValueError, OSError) as error:
+        # `Path.resolve` raises rather than returning for a path the operating
+        # system cannot represent -- an embedded NUL is `ValueError`, a symlink
+        # loop is `OSError`. Both arrive here from a *model-supplied* argument,
+        # so letting them escape hands the model a framework error with no
+        # verdict field: the one thing this package exists to prevent.
+        #
+        # The message deliberately does not echo the target. It is the thing
+        # that is malformed, and a NUL byte pasted back into a JSON result is
+        # a second problem on top of the first.
+        raise GuardRejection(REJECT_INVALID_PATH, f"{type(error).__name__}: {error}") from error
     for root in roots:
         if resolved == root or resolved.is_relative_to(root):
             return resolved
@@ -177,13 +320,41 @@ def assert_safe_argv(argv: list[str]) -> None:
             raise GuardRejection("denied_flag", token)
 
 
-def redact(text: str) -> str:
-    """Strip recognisable credential shapes from anything bound for evidence."""
+def wire_safe(text: str) -> str:
+    """Make a string encodable, so a good verdict is not lost to its own payload.
+
+    A lone surrogate is legal in a Python `str` and legal as a JSON escape --
+    `"\\ud800"` parses without complaint -- but it cannot be encoded to UTF-8.
+    The tool therefore produces a perfectly correct verdict that the transport
+    then fails to serialise, and what reaches the model is the SDK's
+    "Error executing tool" with no verdict field in it.
+
+    That is the failure this package exists to prevent, arriving one layer
+    further out than the rule is usually applied: it is not enough that
+    `score_run` does not raise, the thing it returns has to be deliverable.
+    Found by driving the real server over stdio; no in-process test can see it,
+    because in-process nothing ever encodes the result.
+
+    `backslashreplace` rather than `replace`: the reader gets `\\ud800` and can
+    see what was there, instead of a `?` that destroys the evidence silently.
+    """
     if not text:
         return text
-    for pattern, replacement in _SECRET_PATTERNS:
-        text = pattern.sub(replacement, text)
-    return text
+    return text.encode("utf-8", errors="backslashreplace").decode("utf-8")
+
+
+def redact(text: str) -> str:
+    """Strip recognisable credential shapes from anything bound for evidence.
+
+    Also makes the result encodable. Every externally-derived string in a
+    result already flows through here, so this is the one place that guarantee
+    can be made once rather than remembered at each call site.
+    """
+    if not text:
+        return text
+    for rule in _SECRET_PATTERNS:
+        text = rule.pattern.sub(rule.replacement, text)
+    return wire_safe(text)
 
 
 def tail(text: str, limit: int) -> str:
@@ -202,3 +373,150 @@ def clean(text: str, limit: int) -> str:
     """Redact then truncate. Order matters: truncating first can bisect a
     token and leave half a credential in the evidence file."""
     return tail(redact(text or ""), limit)
+
+
+def _reject_non_finite(token: str) -> Any:
+    """`json.loads` hook for the three constants JSON does not actually have."""
+    raise ValueError(
+        f"{token} is a Python extension, not JSON; it cannot be framed as JSON-RPC"
+    )
+
+
+def _checked_float(token: str) -> float:
+    """Reject a number that *overflows* to infinity rather than naming it.
+
+    `parse_constant` fires only on the literal tokens `NaN`, `Infinity` and
+    `-Infinity`. `1e999` is an ordinary JSON number that Python parses to `inf`
+    without going near that hook, and it re-serialises as `Infinity` -- the
+    same unframeable payload, by a route the first version of this guard did
+    not cover. Found by a security review, not by the tests written for it.
+    """
+    value = float(token)
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ValueError(
+            f"{token} overflows to a non-finite float; it cannot be framed as JSON-RPC"
+        )
+    return value
+
+
+def loads_strict(text: str) -> Any:
+    """`json.loads`, minus the non-standard floats Python accepts by default.
+
+    Python's decoder accepts bare ``NaN``, ``Infinity`` and ``-Infinity``, and
+    its encoder emits them back. JSON has no such literals, so a payload
+    carrying one parses here and then re-serialises into a frame the client
+    cannot read -- and on a stdio MCP server an unreadable frame is not a
+    visible error, it is the tool disappearing.
+
+    Refusing is the contract-correct answer rather than substituting `null`:
+    the value is evidence this wrapper cannot faithfully carry, and guessing
+    what the producer meant is the failure this package exists to prevent. The
+    caller downgrades the evidence and keeps the verdict, which comes from the
+    exit code and is unaffected.
+
+    Raises `ValueError` for both a malformed document and a non-finite float,
+    so callers need one handler rather than a list of `json` subclasses that
+    has already been wrong three times.
+    """
+    return json.loads(text, parse_constant=_reject_non_finite, parse_float=_checked_float)
+
+
+def redact_structure(value: Any, max_depth: int) -> tuple[Any, bool]:
+    """Redact every string inside a parsed JSON structure, keys included.
+
+    `clean` protects text. This protects *parsed* payloads, which were the gap:
+    a tool that parses stdout as JSON and returns the object has routed a
+    credential straight past the text-level redaction, because the redaction
+    only ever ran on the branch that failed to parse.
+
+    Redacting the raw JSON text before parsing would be simpler and is wrong.
+    One of the credential patterns consumes to the next whitespace, so on input
+    like ``{"authorization": "Bearer abc"}`` it eats the closing quote and
+    leaves text that no longer parses. Structure first, then strings.
+
+    The walk is **iterative**. A recursive one would raise `RecursionError` on
+    a deeply nested document, and this package's whole contract is that an
+    exception is never a verdict -- the same trap `json.loads` sets, one layer
+    further in. Depth is still bounded, because an attacker-shaped payload can
+    nest far enough to exhaust memory rather than stack: past `max_depth` the
+    subtree is replaced with `DEPTH_LIMIT_MARKER`.
+
+    Returns ``(redacted, depth_exceeded)``. Never raises. Never mutates the
+    input: callers keep the original for size accounting.
+    """
+    holder: dict[str, Any] = {}
+    stack: list[tuple[Any, Any, Any, int]] = [(value, holder, "root", 0)]
+    depth_exceeded = False
+
+    while stack:
+        node, parent, key, depth = stack.pop()
+        if isinstance(node, str):
+            parent[key] = redact(node)
+        elif isinstance(node, dict):
+            if depth >= max_depth:
+                parent[key] = DEPTH_LIMIT_MARKER
+                depth_exceeded = True
+                continue
+            branch: dict[Any, Any] = {}
+            parent[key] = branch
+            # Keys are redacted too: a credential is as likely to appear as a
+            # key in a map of secrets as it is in a value. That introduces a
+            # collision this loop has to handle -- two *different* credentials
+            # redact to the same marker, and the second would otherwise
+            # overwrite the first, dropping evidence silently in the exact code
+            # path this function exists to defend. Allocation happens here,
+            # eagerly, because assignment into `branch` is deferred until the
+            # child is popped and a check at that point would race.
+            # A next-ordinal counter rather than a probing loop. The obvious
+            # `while candidate in taken: ordinal += 1` is quadratic when many
+            # keys collapse to the same marker, which is precisely the input
+            # this function is written to survive: 4000 credential-shaped keys
+            # inside the size budget took 905ms of pure probing. Remembering
+            # the next free ordinal per base makes it linear.
+            # Redact every key first, then allocate. Two passes, because a
+            # single pass got each half wrong in turn:
+            #
+            # * Probing with `while candidate in taken` is quadratic on the
+            #   input this function exists to survive -- 4000 keys collapsing
+            #   to one marker spent 905ms scanning. A per-base counter fixes
+            #   that.
+            # * But a counter alone can hand back a name that a *literal* key
+            #   already holds. `{"ghp_A...": 1, "ghp_B...": 2,
+            #   "[REDACTED:github-token]#2": 3}` produced two entries out of
+            #   three, dropping the third silently -- in the function written
+            #   to stop evidence disappearing silently. Knowing every redacted
+            #   key up front is what makes a genuinely free name findable.
+            redacted_keys = [
+                redact(child_key) if isinstance(child_key, str) else child_key
+                for child_key in node
+            ]
+            occupied = set(redacted_keys)
+            next_ordinal: dict[Any, int] = {}
+            for (_, child), base_key in zip(node.items(), redacted_keys, strict=True):
+                safe_key = base_key
+                if base_key in next_ordinal:
+                    ordinal = next_ordinal[base_key]
+                    safe_key = f"{base_key}#{ordinal}"
+                    while safe_key in occupied:
+                        ordinal += 1
+                        safe_key = f"{base_key}#{ordinal}"
+                    occupied.add(safe_key)
+                    next_ordinal[base_key] = ordinal + 1
+                else:
+                    next_ordinal[base_key] = 2
+                stack.append((child, branch, safe_key, depth + 1))
+        elif isinstance(node, list):
+            if depth >= max_depth:
+                parent[key] = DEPTH_LIMIT_MARKER
+                depth_exceeded = True
+                continue
+            # Pre-sized so the stack can assign by index in any order.
+            row: list[Any] = [None] * len(node)
+            parent[key] = row
+            for index, child in enumerate(node):
+                stack.append((child, row, index, depth + 1))
+        else:
+            # int, float, bool, None. Nothing to redact and nothing to walk.
+            parent[key] = node
+
+    return holder["root"], depth_exceeded

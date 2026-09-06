@@ -18,13 +18,20 @@ import os
 
 import pytest
 
-# Probe the submodule, not the top-level name. This repo has its own `mcp/`
-# directory, so with the repo root on sys.path `import mcp` succeeds even with
-# no SDK installed -- it resolves to an empty namespace package. (At runtime a
-# real installed package outranks a namespace portion, so the server itself is
-# unaffected; only a bare `import mcp` guard is fooled.) `importorskip("mcp")`
-# therefore never skipped, and the suite errored instead.
-_SDK = "mcp.server.mcpserver"
+# Probe the package, not one major's submodule.
+#
+# This guard used to name `mcp.server.mcpserver`, which exists only in 2.x. The
+# stated reason was that the repo's own `mcp/` directory made a bare
+# `import mcp` succeed as an empty namespace package even with no SDK
+# installed, so `importorskip("mcp")` never skipped. That directory was renamed
+# to `mcp_server/`, and the workaround outlived the hazard: on the declared
+# floor of 1.2 the submodule does not exist, so this file errored during
+# collection under REQUIRE_MCP and skipped silently without it. A floor that
+# cannot run its own smoke suite is not a supported version.
+#
+# `test_the_sdk_is_a_real_package_not_a_namespace_shim` below re-asserts the
+# original hazard directly, so probing the package name stays safe.
+_SDK = "mcp"
 
 # Locally the SDK is optional -- `make test` before `make setup` should still
 # run the contract suite. In CI it is mandatory, because a skip that can
@@ -91,6 +98,21 @@ def test_descriptions_carry_the_authority_boundary(tool_name, phrase):
 # --------------------------------------------------------------------------
 
 
+def test_the_sdk_is_a_real_package_not_a_namespace_shim():
+    """The hazard the old submodule probe was working around, asserted directly.
+
+    If a directory named `mcp/` ever reappears at the repo root, `import mcp`
+    resolves to an empty namespace package, every skip above becomes hollow and
+    this file certifies nothing. A namespace package has no `__file__`.
+    """
+    import mcp
+
+    assert getattr(mcp, "__file__", None) is not None, (
+        "`mcp` resolved to a namespace package, so the SDK guard is hollow. "
+        "Something at the repo root is shadowing the installed SDK."
+    )
+
+
 def test_loader_reports_which_sdk_major_it_found():
     from foundry_spike_mcp.server import _load_server_class
 
@@ -143,3 +165,61 @@ def test_missing_sdk_raises_an_actionable_message_not_a_bare_importerror(monkeyp
     with pytest.raises(RuntimeError) as caught:
         server_module._load_server_class()
     assert "pip install" in str(caught.value)
+
+
+
+def _unwrap(result: object) -> dict:
+    """Pull the tool's dict out of whatever the installed SDK major returns.
+
+    2.x returns `(content, structured)`; 1.x returns a content list. The test
+    is version-tolerant about the envelope and strict about what is inside it.
+    """
+    import json as _json
+
+    if isinstance(result, tuple):
+        for part in reversed(result):
+            if isinstance(part, dict):
+                return part.get("result", part)
+    blocks = result if isinstance(result, list) else getattr(result, "content", [])
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if text:
+            return _json.loads(text)
+    raise AssertionError(f"no dict payload in {result!r}")
+
+def test_the_registered_tool_actually_runs_when_the_protocol_calls_it(tmp_path, monkeypatch):
+    """Registering a tool and running one are different claims.
+
+    `list_tools` proves the wrappers were registered. Their bodies were never
+    executed by any in-process test, so the one line that matters -- the wrapper
+    delegating to the real implementation -- was covered only by the subprocess
+    E2E, whose coverage the parent process does not see. A wrapper that
+    registered and then returned the wrong thing would pass every other test in
+    this file.
+    """
+    target = tmp_path / "repo"
+    (target / "openspec").mkdir(parents=True)
+    monkeypatch.setenv("PLANLINT_TARGET", str(target))
+    monkeypatch.setenv("PLANLINT_ALLOWED_ROOTS", str(target))
+    monkeypatch.setenv("PLANLINT_BIN", "/nonexistent/planlint-for-this-test")
+
+    server = build_server()
+    result = asyncio.run(server.call_tool("lint_openspec", {}))
+
+    payload = _unwrap(result)
+    # The binary does not exist, so the honest answer is BLOCKED -- and the
+    # point is that it arrived as a verdict through the registered wrapper
+    # rather than as an exception out of it.
+    assert payload["verdict"] == "BLOCKED"
+    assert payload["blocked_reason"] == "tool_not_found"
+    assert payload["contract"]["authority"] == "exit_code"
+
+
+def test_the_scorer_wrapper_also_delegates(tmp_path, monkeypatch):
+    monkeypatch.setenv("EVAL_SINK_DIR", str(tmp_path))
+    monkeypatch.setenv("EVAL_ALLOWED_ROOTS", str(tmp_path))
+    server = build_server()
+    payload = _unwrap(asyncio.run(server.call_tool("score_run", {"run_id": "absent"})))
+    assert payload["verdict"] == "BLOCKED"
+    assert payload["blocked_reason"] == "artifact_missing"
+    assert payload["pass_rate"] is None

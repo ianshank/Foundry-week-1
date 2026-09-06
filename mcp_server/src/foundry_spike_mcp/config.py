@@ -43,6 +43,8 @@ ENV_EVAL_ALLOWED_ROOTS = "EVAL_ALLOWED_ROOTS"
 ENV_EVAL_MAX_ARTIFACT_BYTES = "EVAL_MAX_ARTIFACT_BYTES"
 ENV_STDERR_LIMIT = "FOUNDRY_SPIKE_STDERR_LIMIT"
 ENV_STDOUT_LIMIT = "FOUNDRY_SPIKE_STDOUT_LIMIT"
+ENV_FINDINGS_MAX_BYTES = "FOUNDRY_SPIKE_FINDINGS_MAX_BYTES"
+ENV_FINDINGS_MAX_DEPTH = "FOUNDRY_SPIKE_FINDINGS_MAX_DEPTH"
 ENV_LOG_LEVEL = "FOUNDRY_SPIKE_LOG_LEVEL"
 ENV_LOG_FORMAT = "FOUNDRY_SPIKE_LOG_FORMAT"
 
@@ -54,6 +56,20 @@ DEFAULT_FAIL_ON_VALUES = ("ERROR", "WARN", "WARNING", "INFO")
 DEFAULT_STDERR_LIMIT = 2000
 DEFAULT_STDOUT_LIMIT = 20000
 DEFAULT_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
+#: Ceiling on the planlint stdout this wrapper will parse into `findings`.
+#: Sized for a payload a model can actually read: past this the evidence is
+#: replaced by a bounded excerpt and the verdict, which comes from the exit
+#: code, is unaffected. Deliberately far below `DEFAULT_MAX_ARTIFACT_BYTES`,
+#: because that bounds a file a human chose and this bounds a subprocess's
+#: output stream.
+DEFAULT_FINDINGS_MAX_BYTES = 256 * 1024
+#: Depth ceiling for the redaction walk over a parsed payload.
+DEFAULT_FINDINGS_MAX_DEPTH = 64
+#: Truncation limit for the detail on a configuration failure. Deliberately not
+#: configurable, and it cannot be: the thing that failed *is* the loader, so
+#: there is no trustworthy `stderr_limit` to read at that point. Named here
+#: rather than repeated as a bare `500` at three call sites.
+CONFIG_ERROR_DETAIL_LIMIT = 500
 DEFAULT_LOG_LEVEL = "WARNING"
 DEFAULT_LOG_FORMAT = "text"
 
@@ -105,7 +121,15 @@ def _abs_paths(source: Mapping[str, str], *names: str) -> tuple[Path, ...]:
             path = Path(entry).expanduser()
             if not path.is_absolute():
                 raise ConfigError(f"{name} entry {entry!r} is not an absolute path")
-            roots.append(path.resolve(strict=False))
+            try:
+                roots.append(path.resolve(strict=False))
+            except (ValueError, OSError) as error:
+                # `resolve` raises on a path the OS cannot represent. Callers
+                # catch `ConfigError`; a bare `ValueError` from here escaped
+                # them all, because `ConfigError` subclasses `ValueError` and
+                # not the other way round. A malformed setting is BLOCKED, and
+                # the run says which variable was wrong.
+                raise ConfigError(f"{name} entry is unusable: {type(error).__name__}") from error
         if roots:
             return tuple(roots)
     return ()
@@ -125,6 +149,8 @@ class PlanlintConfig:
     fail_on_values: tuple[str, ...] = DEFAULT_FAIL_ON_VALUES
     stderr_limit: int = DEFAULT_STDERR_LIMIT
     stdout_limit: int = DEFAULT_STDOUT_LIMIT
+    findings_max_bytes: int = DEFAULT_FINDINGS_MAX_BYTES
+    findings_max_depth: int = DEFAULT_FINDINGS_MAX_DEPTH
 
 
 @dataclass(frozen=True)
@@ -180,6 +206,12 @@ def load_planlint_config(source: Mapping[str, str] | None = None) -> PlanlintCon
         fail_on_values=fail_on_values,
         stderr_limit=_positive_int(source, ENV_STDERR_LIMIT, DEFAULT_STDERR_LIMIT),
         stdout_limit=_positive_int(source, ENV_STDOUT_LIMIT, DEFAULT_STDOUT_LIMIT),
+        findings_max_bytes=_positive_int(
+            source, ENV_FINDINGS_MAX_BYTES, DEFAULT_FINDINGS_MAX_BYTES
+        ),
+        findings_max_depth=_positive_int(
+            source, ENV_FINDINGS_MAX_DEPTH, DEFAULT_FINDINGS_MAX_DEPTH
+        ),
     )
 
 

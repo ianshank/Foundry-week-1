@@ -30,15 +30,26 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# The dual-import fallback arrived with the probe decomposition on main and is
+# kept as landed: `tests/integration/` drives this module with its own sys.path
+# setup and relies on it. The two names this branch added are threaded through
+# both arms, so the fallback cannot silently import a different surface from
+# the primary path.
 try:
     from . import guards
-    from .config import ConfigError, EvalConfig, load_eval_config
+    from .config import (
+        CONFIG_ERROR_DETAIL_LIMIT,
+        ConfigError,
+        EvalConfig,
+        load_eval_config,
+    )
     from .logging_setup import get_logger, log_result
     from .verdicts import (
         BLOCKED,
         BLOCKED_ARTIFACT_MISSING,
         BLOCKED_ARTIFACT_SCHEMA,
         BLOCKED_ARTIFACT_UNREADABLE,
+        BLOCKED_CONFIG_ERROR,
         BLOCKED_GUARD_REJECTED,
         BLOCKED_NO_SCORED_RESULTS,
         BLOCKED_NOTE,
@@ -51,6 +62,7 @@ except (ImportError, ValueError):
         sys.path.insert(0, _src)
     from foundry_spike_mcp import guards
     from foundry_spike_mcp.config import (
+        CONFIG_ERROR_DETAIL_LIMIT,
         ConfigError,
         EvalConfig,
         load_eval_config,
@@ -61,6 +73,7 @@ except (ImportError, ValueError):
         BLOCKED_ARTIFACT_MISSING,
         BLOCKED_ARTIFACT_SCHEMA,
         BLOCKED_ARTIFACT_UNREADABLE,
+        BLOCKED_CONFIG_ERROR,
         BLOCKED_GUARD_REJECTED,
         BLOCKED_NO_SCORED_RESULTS,
         BLOCKED_NOTE,
@@ -81,8 +94,6 @@ _NAME_KEYS = ("scorer", "scorer_name", "name", "scorer_id", "id")
 #: docstring forbids, arriving through the shape-tolerant walk instead of
 #: through a coercion.
 _PASSED_KEYS = ("passed", "pass")
-
-BLOCKED_CONFIG_ERROR = "configuration_error"
 
 #: Keys present on every result, so callers never have to probe for existence.
 _RESULT_KEYS = (
@@ -131,17 +142,33 @@ def _envelope(**overrides: Any) -> dict[str, Any]:
         contract=_contract(),
     )
     base.update(overrides)
+    # Derived, not remembered. `planlint._envelope` attaches its BLOCKED note
+    # automatically; this one required every caller to re-apply it by hand, so
+    # any future BLOCKED path built here would have shipped without the note
+    # the contract calls load-bearing.
+    if base["verdict"] == BLOCKED:
+        base["contract"] = {**_contract(), "note": BLOCKED_NOTE}
     return base
 
 
-def _blocked(reason: str, detail: str, limit: int = 500, **extra: Any) -> dict[str, Any]:
+def _blocked(
+    reason: str, detail: str, limit: int = CONFIG_ERROR_DETAIL_LIMIT, **extra: Any
+) -> dict[str, Any]:
+    """The only constructor for 'I could not read it', and the only place a
+    refusal gets logged.
+
+    Same reasoning as `planlint._blocked`: `log_result` ran on the success path
+    only, so every refusal here -- a missing artifact, an unreadable one, a
+    guard rejection, a schema this tool does not recognise -- was invisible at
+    the default log level.
+    """
     blocked = _envelope(
         verdict=BLOCKED,
         blocked_reason=reason,
         blocked_detail=guards.clean(detail, limit),
         **extra,
     )
-    blocked["contract"] = {**_contract(), "note": BLOCKED_NOTE}
+    log_result(_log, "score_run", blocked)
     return blocked
 
 
@@ -172,6 +199,16 @@ def _collect_scorers(
     if ignored is None:
         ignored = []
 
+    # The pinned schema, as landed on main. This branch's review argued for
+    # holding the pin until a real sink artifact existed; that argument lost
+    # and the pin is the contract now, so what follows keeps it exactly and
+    # adds only the redaction this branch was carrying.
+    #
+    # `source_path` no longer needs `wire_safe`: every value here is generated
+    # by this function (`$.results[i]`) rather than taken from an artifact key,
+    # so it cannot carry a lone surrogate. `scorer` and `detail` still can --
+    # they come straight from a file this wrapper did not write, into a result
+    # the model reads and a trace an operator commits.
     if not isinstance(node, dict) or "results" not in node:
         ignored.append({
             "source_path": "$",
@@ -208,7 +245,9 @@ def _collect_scorers(
             })
             continue
 
-        name = next((str(item[key]) for key in _NAME_KEYS if key in item and item[key] is not None), None)
+        name = next(
+            (str(item[key]) for key in _NAME_KEYS if key in item and item[key] is not None), None
+        )
         if name is None:
             ignored.append({
                 "source_path": source_path,
@@ -224,12 +263,13 @@ def _collect_scorers(
                     "why": "scorer record has a non-boolean, non-null verdict",
                 })
                 continue
+            detail = item.get("reason") or item.get("message") or item.get("detail")
             out.append({
-                "scorer": name,
+                "scorer": guards.redact(name),
                 "passed": passed,
                 "source_path": source_path,
                 "named_by": "field",
-                "detail": item.get("reason") or item.get("message") or item.get("detail"),
+                "detail": guards.redact(detail) if isinstance(detail, str) else detail,
             })
 
     return out, ignored
@@ -240,7 +280,7 @@ def _aggregate(scorers: list[dict[str, Any]]) -> tuple[float | None, dict[str, i
 
     Returns ``None`` -- not 0.0 -- when nothing was scored.
     """
-    counts = {"true": 0, "false": 0, "null": 0, "unreadable": 0}
+    counts = dict(_EMPTY_COUNTS)
     for record in scorers:
         value = record["passed"]
         if value is True:
@@ -331,11 +371,19 @@ def score_run(
                 run_id=run_id,
                 artifact=str(resolved),
             )
-        document = json.loads(resolved.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, RecursionError) as error:
-        # RecursionError comes from `json.loads` on deeply nested input and is
-        # not a JSONDecodeError. Uncaught it escaped this function entirely,
-        # contradicting the "never raises" contract in the module docstring.
+        document = guards.loads_strict(resolved.read_text(encoding="utf-8"))
+    except (ValueError, RecursionError) as error:
+        # Three ways this raises, and none of them is the obvious one:
+        #
+        # * `RecursionError` comes from `json.loads` on deeply nested input and
+        #   is not a `JSONDecodeError`.
+        # * `UnicodeDecodeError` comes from `read_text` on an artifact that is
+        #   not valid UTF-8. It subclasses `ValueError` as a sibling of
+        #   `JSONDecodeError`, not a parent, so catching the latter missed it.
+        #
+        # Refused rather than decoded with replacement, which is the choice
+        # this module makes everywhere: substituting U+FFFD into a scorer name
+        # would let a run report on evidence it could not actually read.
         return _blocked(
             BLOCKED_ARTIFACT_UNREADABLE,
             f"artifact is not usable JSON: {type(error).__name__}: {error}",
@@ -353,8 +401,12 @@ def score_run(
     try:
         scorers, ignored = _collect_scorers(document)
     except RecursionError:
-        # The walk is recursive too. A document deep enough to parse but too
-        # deep to walk is still "could not read it", never an empty pass.
+        # Kept, and no longer for the reason it was added. It used to guard the
+        # shape-tolerant recursive walk, which the pinned schema removed -- but
+        # `_collect_scorers` still stringifies artifact values it did not write
+        # (`str(item[key])` for a name), and `dict.__repr__` recurses. A
+        # document deep enough to parse but not to render is still "could not
+        # read it", never an empty pass.
         return _blocked(
             BLOCKED_ARTIFACT_UNREADABLE,
             "artifact nests deeper than the walk can follow",
@@ -413,8 +465,6 @@ def score_run(
         pass_rate=pass_rate,
         counts=counts,
     )
-    if verdict == BLOCKED:
-        result["contract"] = {**_contract(), "note": BLOCKED_NOTE}
     log_result(_log, "score_run", result)
     return result
 

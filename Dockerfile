@@ -13,7 +13,11 @@
 # locally when CI and a laptop disagree.
 #
 #   make docker-test        # contract suite on the floor interpreter
-#   make docker-test-full   # + the SDK, so the transport job runs too
+#   make docker-transport   # + the SDK, so the transport job runs too
+#   make docker-lint        # ruff + mypy on the floor interpreter
+#
+# Those three names are the real targets. This block said `make docker-test-full`,
+# a target that has never existed -- the one instruction a reader would copy.
 #
 # 3.10 on purpose: it is the floor declared in mcp_server/pyproject.toml. If
 # the suite only passes on something newer, the floor is a lie and this image
@@ -27,9 +31,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /spike
 
-# Dependency layer first so edits to source do not re-resolve the world.
-COPY mcp_server/pyproject.toml ./mcp_server/pyproject.toml
-RUN python -m pip install --upgrade pip && python -m pip install pytest ruff mypy
+# The tool layer, before any source is copied, so a source edit does not
+# re-resolve it. `coverage` is here because `make coverage` and CI's quality
+# job both enforce the floor through it, and a lint image that cannot run the
+# same command as CI is a different environment pretending to be the same one.
+#
+# This used to `COPY mcp_server/pyproject.toml` first, described as a
+# dependency layer. It cached nothing: the only install that reads that file
+# is the `pip install -e` in the transport stage, which necessarily runs after
+# `COPY . .` and so was never cached by it.
+RUN python -m pip install --upgrade pip \
+ && python -m pip install pytest ruff mypy coverage
 
 # ---------------------------------------------------------------- contract
 # The suite that must pass with no third-party dependency installed. Its whole

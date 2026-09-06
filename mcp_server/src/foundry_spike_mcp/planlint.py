@@ -31,19 +31,27 @@ Two structural properties worth stating, because both were review findings:
 
 from __future__ import annotations
 
-import json
+import contextlib
+import os
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
 from . import guards
-from .config import ConfigError, PlanlintConfig, load_planlint_config
+from .config import (
+    CONFIG_ERROR_DETAIL_LIMIT,
+    ConfigError,
+    PlanlintConfig,
+    load_planlint_config,
+)
 from .logging_setup import get_logger, log_result
 from .verdicts import (
     BLOCKED,
+    BLOCKED_CONFIG_ERROR,
     BLOCKED_GUARD_REJECTED,
     BLOCKED_NOTE,
     BLOCKED_TIMEOUT,
@@ -53,7 +61,6 @@ from .verdicts import (
     verdict_for_exit_code,
 )
 
-BLOCKED_CONFIG_ERROR = "configuration_error"
 BLOCKED_PROCESS_ERROR = "process_error"
 
 #: Keys present on every result, so callers never have to probe for existence.
@@ -69,12 +76,50 @@ _RESULT_KEYS = (
     "duration_ms",
     "findings",
     "findings_parse_error",
+    "findings_truncated",
     "stdout_excerpt",
     "stderr",
     "contract",
 )
 
 _log = get_logger("planlint")
+
+
+#: Whether this platform can signal a whole process group. POSIX can; Windows
+#: has no equivalent, and asking for a new session there raises. The timeout
+#: still kills the direct child everywhere -- group killing is the part that
+#: also reaches its children.
+_CAN_KILL_GROUPS = hasattr(os, "killpg") and hasattr(os, "getpgid")
+
+#: How long to wait for a killed child's pipes after the kill signal. Short:
+#: the process is already dead, this only collects what it managed to write.
+_DRAIN_SECONDS = 5
+
+
+def _end_process_tree(process: subprocess.Popen[str]) -> None:
+    """Kill the timed-out child and anything it started. Never raises.
+
+    Called from an exception handler on a path whose entire contract is that
+    it returns a verdict, so a failure to clean up must not become the thing
+    the caller sees. A process that is already gone is the normal case.
+    """
+    try:
+        if _CAN_KILL_GROUPS:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        else:  # pragma: no cover - Windows
+            process.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        with contextlib.suppress(OSError):
+            process.kill()
+
+
+def _drain(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """Collect whatever the child wrote before it was killed. Never raises."""
+    try:
+        stdout, stderr = process.communicate(timeout=_DRAIN_SECONDS)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        return "", ""
+    return _decode(stdout), _decode(stderr)
 
 
 def _decode(stream: Any) -> str:
@@ -113,6 +158,10 @@ def _envelope(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = dict.fromkeys(_RESULT_KEYS)
     base["verdict"] = BLOCKED
     base["contract"] = _contract(BLOCKED)
+    # False rather than None: on a path where no payload was ever read, nothing
+    # was truncated, and that is a fact rather than an absence. A caller that
+    # branches on this key should never have to treat null as a third state.
+    base["findings_truncated"] = False
     base.update(overrides)
     if "verdict" in overrides and "contract" not in overrides:
         base["contract"] = _contract(overrides["verdict"])
@@ -121,13 +170,111 @@ def _envelope(**overrides: Any) -> dict[str, Any]:
 
 def _blocked(reason: str, detail: str, limit: int, **extra: Any) -> dict[str, Any]:
     """Build a BLOCKED result. The only way this module reports 'I could not
-    look' -- there is deliberately no other constructor for it."""
-    return _envelope(
+    look' -- there is deliberately no other constructor for it.
+
+    It logs, and that is the point of routing every refusal through here.
+    `log_result` used to be called only after a subprocess returned, so every
+    BLOCKED that happened *before* execution -- a bad config, a refused verb, a
+    target outside the allow list, a missing binary -- produced no log line at
+    all. Those are the most common refusals, and `logging_setup` claims in its
+    own docstring to record "the reason attached to every refusal". Logging
+    here makes that true by construction rather than by remembering.
+    """
+    result = _envelope(
         verdict=BLOCKED,
         blocked_reason=reason,
         blocked_detail=guards.clean(detail, limit),
         **extra,
     )
+    log_result(_log, "planlint", result)
+    return result
+
+
+def _read_findings(
+    stdout: str, config: PlanlintConfig
+) -> tuple[Any, str | None, str | None, bool]:
+    """Turn planlint's stdout into evidence: parsed, bounded and redacted.
+
+    Returns ``(findings, parse_error, stdout_excerpt, truncated)``.
+
+    **None of this may change the verdict.** The verdict comes from the exit
+    code and is already decided by the time this runs. Everything here can only
+    downgrade the *evidence*, which is what the contract permits: exit 1 with
+    garbage on stdout is still FINDINGS, and so is exit 1 with a payload too
+    large to hand back.
+
+    Three guarantees, each of which was previously missing on the branch that
+    parses successfully -- the common one:
+
+    * **Bounded.** The size test runs on the raw text, before `json.loads`, so
+      an oversized payload is never materialised as a Python object at all. A
+      valid 30 MB document used to be returned whole.
+    * **Redacted.** A credential inside *valid* JSON went straight back to the
+      model, because redaction only ran in the parse-failure branch. It now
+      runs on the parsed structure, where it cannot corrupt the JSON.
+    * **Never raises.** `json.loads` raises several things that are not
+      `JSONDecodeError` -- `RecursionError` on deep input, `UnicodeDecodeError`
+      and the integer-digit-limit `ValueError` on hostile input -- so the base
+      classes are caught rather than a list of subclasses that has already been
+      wrong three times. The redaction walk is iterative for the same reason.
+    """
+    if not stdout.strip():
+        return None, None, None, False
+
+    # Measured on the raw stream, before `json.loads`. Parsing first to find
+    # out whether the result is too big to keep is exactly the memory
+    # exhaustion this prevents.
+    #
+    # In bytes, because the setting is named in bytes. `stdout` arrives already
+    # decoded, so `len` would count code points: 100k CJK characters are 300k
+    # UTF-8 bytes and slipped a 256 KiB ceiling entirely. Encoding to measure
+    # costs a transient copy of a string subprocess decoded from bytes moments
+    # ago, so it adds nothing to the peak this function has already seen.
+    size = len(stdout.encode("utf-8", errors="replace"))
+    if size > config.findings_max_bytes:
+        _log.warning(
+            "planlint stdout over the findings limit; evidence truncated, verdict unaffected",
+            extra={"tool": "planlint"},
+        )
+        return (
+            None,
+            (
+                f"stdout is {size} bytes, over the "
+                f"{config.findings_max_bytes} byte findings limit"
+            ),
+            guards.clean(stdout, config.stdout_limit),
+            True,
+        )
+
+    try:
+        parsed = guards.loads_strict(stdout)
+    except (ValueError, RecursionError) as error:
+        # Unparsable stdout downgrades the *evidence*, never the verdict. On
+        # exit 2 this is the normal case: the payload is a usage message, and
+        # BLOCKED is already correct without it.
+        #
+        # `ValueError`, not `JSONDecodeError`. Three separate defects in this
+        # repository's history were the same mistake: `json.loads` raises
+        # several things that are not `JSONDecodeError`, and catching the
+        # subclass caught only the one that had been noticed. `JSONDecodeError`
+        # and `UnicodeDecodeError` are both `ValueError` subclasses, as is the
+        # integer-digit-limit error a 5000-digit number raises. Catching the
+        # base class fixes the class of bug rather than its third instance.
+        # `RecursionError` is separate: it descends from `RuntimeError`.
+        return (
+            None,
+            f"stdout is not usable JSON: {type(error).__name__}: {error}",
+            guards.clean(stdout, config.stdout_limit),
+            False,
+        )
+
+    findings, depth_exceeded = guards.redact_structure(parsed, config.findings_max_depth)
+    if depth_exceeded:
+        _log.debug(
+            "findings payload nested past the redaction depth limit; deep subtrees elided",
+            extra={"tool": "planlint"},
+        )
+    return findings, None, None, False
 
 
 def run_verb(
@@ -153,7 +300,7 @@ def run_verb(
     except ConfigError as error:
         # A misconfigured run could not form an opinion. Substituting defaults
         # here would hide an operator mistake behind a plausible-looking result.
-        return _blocked(BLOCKED_CONFIG_ERROR, str(error), 500)
+        return _blocked(BLOCKED_CONFIG_ERROR, str(error), CONFIG_ERROR_DETAIL_LIMIT)
 
     limit = config.stderr_limit
 
@@ -189,7 +336,22 @@ def run_verb(
         # looks exactly like a precondition error. `00-baseline.sh` reports
         # `--format` as a candidate, so this repo was routing operators into
         # that trap by its own instructions.
-        argv.extend(shlex.split(config.json_flag))
+        try:
+            argv.extend(shlex.split(config.json_flag))
+        except ValueError as error:
+            # `shlex.split` raises on an unbalanced quote, and this value comes
+            # from the environment: `PLANLINT_JSON_FLAG='"'` sent a bare
+            # ValueError straight out of this function. That is a framework
+            # error with no verdict field -- the one outcome the module
+            # docstring forbids -- reached through the setting the docstring
+            # above spends nine lines explaining how to get right.
+            return _blocked(
+                BLOCKED_CONFIG_ERROR,
+                f"PLANLINT_JSON_FLAG is not parseable as a command line: {error}",
+                limit,
+                verb=safe_verb,
+                target=str(resolved),
+            )
 
     try:
         guards.assert_safe_argv(argv)
@@ -208,23 +370,35 @@ def run_verb(
 
     _log.debug("running planlint", extra={"tool": "planlint", "command": redacted_argv})
     try:
-        proc = subprocess.run(  # noqa: S603 - argv is constructed, never model-supplied
+        # `Popen` rather than `run`, for one reason: the handle has to survive
+        # a timeout. `subprocess.run` kills the direct child and raises, and
+        # `TimeoutExpired` carries no process object, so anything the child
+        # spawned is orphaned. A review reproduced it -- a wrapper that starts
+        # a worker leaks that worker on every timeout, holding the stdout pipe
+        # and accumulating for the life of the server. Harmless for one
+        # developer at a terminal, which is why it lasted; not harmless for
+        # anything long-lived, which is what a hosted week 2 would be.
+        process = subprocess.Popen(  # noqa: S603 - argv is constructed, never model-supplied
             argv,
-            capture_output=True,
-            text=True,
-            timeout=config.timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as expired:
-        # The refusal the runbook asked for and its sample code could not
-        # deliver: a timeout is "could not look", never "found nothing".
-        return _blocked(
-            BLOCKED_TIMEOUT,
-            f"planlint exceeded {config.timeout_seconds}s",
-            limit,
-            stderr=guards.clean(_decode(expired.stderr), limit),
-            duration_ms=int((time.monotonic() - started) * 1000),
-            **common,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            # Pinned, and non-raising. `text=True` alone decodes with the
+            # *locale* encoding and `errors="strict"`, so a subprocess emitting
+            # a byte the locale cannot decode raises `UnicodeDecodeError` out of
+            # `communicate` -- a `ValueError`, so the `except OSError` below
+            # does not catch it, and it escapes `lint_openspec` as a framework
+            # error with no verdict field.
+            #
+            # The module already had `_decode`, which exists to decode with
+            # replacement for exactly this reason. `text=True` made it dead
+            # code for the two streams that matter, because the decode happened
+            # inside `subprocess` before `_decode` ever saw the bytes. Found by
+            # a reviewer; my first attempt to reproduce it failed only because
+            # the fake binary emitted the literal text `\xff` rather than the
+            # byte.
+            encoding="utf-8",
+            errors="replace",
+            start_new_session=_CAN_KILL_GROUPS,
         )
     except FileNotFoundError:
         return _blocked(
@@ -235,33 +409,42 @@ def run_verb(
             BLOCKED_PROCESS_ERROR, f"{type(error).__name__}: {error}", limit, **common
         )
 
-    duration_ms = int((time.monotonic() - started) * 1000)
-    verdict, blocked_reason = verdict_for_exit_code(proc.returncode)
-    stdout = _decode(proc.stdout)
+    try:
+        stdout_text, stderr_text = process.communicate(timeout=config.timeout_seconds)
+    except subprocess.TimeoutExpired:
+        # The refusal the runbook asked for and its sample code could not
+        # deliver: a timeout is "could not look", never "found nothing".
+        _end_process_tree(process)
+        _, late_stderr = _drain(process)
+        return _blocked(
+            BLOCKED_TIMEOUT,
+            f"planlint exceeded {config.timeout_seconds}s",
+            limit,
+            stderr=guards.clean(late_stderr, limit),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            **common,
+        )
+    except OSError as error:  # a read failure part-way through the stream
+        _end_process_tree(process)
+        return _blocked(
+            BLOCKED_PROCESS_ERROR, f"{type(error).__name__}: {error}", limit, **common
+        )
 
-    findings: Any = None
-    parse_error: str | None = None
-    stdout_excerpt: str | None = None
-    if stdout.strip():
-        try:
-            findings = json.loads(stdout)
-        except (json.JSONDecodeError, RecursionError) as error:
-            # Unparsable stdout downgrades the *evidence*, never the verdict.
-            # On exit 2 this is the normal case: the payload is a usage
-            # message, and BLOCKED is already correct without it.
-            # RecursionError is here because deeply nested JSON raises it from
-            # inside `json.loads`, and it is not a JSONDecodeError.
-            parse_error = f"stdout is not usable JSON: {type(error).__name__}: {error}"
-            stdout_excerpt = guards.clean(stdout, config.stdout_limit)
+    duration_ms = int((time.monotonic() - started) * 1000)
+    verdict, blocked_reason = verdict_for_exit_code(process.returncode)
+    stdout = _decode(stdout_text)
+
+    findings, parse_error, stdout_excerpt, truncated = _read_findings(stdout, config)
 
     result = _envelope(
         verdict=verdict,
-        exit_code=proc.returncode,
+        exit_code=process.returncode,
         blocked_reason=blocked_reason,
         findings=findings,
         findings_parse_error=parse_error,
+        findings_truncated=truncated,
         stdout_excerpt=stdout_excerpt,
-        stderr=guards.clean(_decode(proc.stderr), limit),
+        stderr=guards.clean(stderr_text, limit),
         duration_ms=duration_ms,
         **common,
     )
@@ -284,7 +467,11 @@ def lint_openspec(
         target: Absolute path to the repository to lint. Defaults to
             ``$PLANLINT_TARGET``. Must resolve inside ``$PLANLINT_ALLOWED_ROOTS``.
         fail_on: Severity threshold, e.g. ``ERROR``.
-        config: Optional configuration override.
+        config: Pre-built settings. Optional, and not part of the MCP tool
+            surface -- a model never supplies it. It exists so that in-process
+            callers (`__main__`'s self-check, tests) can vary configuration
+            without mutating `os.environ`, which is global, order-dependent and
+            has bitten this repository once already.
 
     Returns:
         A dict that always contains ``verdict`` (PASS / FINDINGS / BLOCKED),
@@ -294,7 +481,7 @@ def lint_openspec(
     try:
         config = config or load_planlint_config()
     except ConfigError as error:
-        return _blocked(BLOCKED_CONFIG_ERROR, str(error), 500, verb="validate")
+        return _blocked(BLOCKED_CONFIG_ERROR, str(error), CONFIG_ERROR_DETAIL_LIMIT, verb="validate")
 
     try:
         threshold = guards.check_fail_on(fail_on, config.fail_on_values)

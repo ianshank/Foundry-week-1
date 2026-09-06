@@ -26,7 +26,9 @@ too: arguments coming *from* a model are untrusted input to this code.
 | Model-supplied argv | There isn't any. Tools take validated scalars and build the command line internally; `assert_safe_argv` is a self-check against a future edit. | `planlint.run_verb` |
 | Command execution | Verb allow list (`detect`, `validate`, `graph`, `rules`, `waivers`, `delta`), mutating-flag deny list, no shell. `init`, `new`, `witness` and `make` are refused. | `guards.ALLOWED_VERBS` |
 | Runaway subprocess | Mandatory timeout; a timeout maps to `BLOCKED`, never to a verdict. A static test asserts no `subprocess` call lacks one. | `planlint.run_verb`, `test_seam_is_closed` |
-| Credentials in output | stderr redacted then truncated (that order — truncating first can bisect a token and leave half a credential behind). | `guards.clean` |
+| Credentials in text output | stderr, and stdout that failed to parse, are redacted then truncated (that order — truncating first can bisect a token and leave half a credential behind). | `guards.clean` |
+| Credentials in structured output | A findings payload that parses as JSON is redacted *after* parsing, keys as well as values, by an iterative depth-bounded walk. Scorer names and details lifted out of a sink artifact are redacted the same way. Redaction previously ran only on the branch where parsing failed, so a credential inside *valid* JSON went back to the model verbatim. | `guards.redact_structure`, `scoring._collect_scorers` |
+| Oversized evidence payload | planlint's stdout is measured in UTF-8 bytes *before* `json.loads`, so an oversized document is never built into an object at all. Past `FOUNDRY_SPIKE_FINDINGS_MAX_BYTES` (256 KiB) the payload is replaced by a bounded excerpt and `findings_truncated` is set; a subtree nested past `FOUNDRY_SPIKE_FINDINGS_MAX_DEPTH` (64) is replaced by a marker rather than dropped. Neither changes the verdict. A sink artifact is bounded by `EVAL_MAX_ARTIFACT_BYTES` before it is read. | `planlint._read_findings`, `scoring.score_run` |
 | Credentials in commits | Three layers: `traces/raw/` gitignored, `promote_trace.py` refuses to publish a capture that scans dirty, pre-commit hook plus gitleaks over full history in CI. | `scripts/`, `.gitleaks.toml` |
 | Outbound requests | Endpoint schemes restricted to `http`/`https`. Endpoints come from the environment, so `file:///etc/passwd` was otherwise reachable by a typo and `urlopen` would have read it into a saved transcript. | `verifier_probe._validate_endpoint` |
 
@@ -45,6 +47,21 @@ is [runbook](RUNBOOK.md) step 5's stop condition, and it belongs in
 
 Stated rather than left for someone to discover:
 
+- **Redaction is a fixed pattern list.** `guards.redact` matches known
+  credential shapes — GitHub tokens and PATs, `sk-` keys, AWS access key ids,
+  Slack tokens, JWTs, and `authorization:` / `*_TOKEN=` assignments. A
+  credential shaped like none of those passes through. The patterns are
+  prefix-anchored on purpose: a rule broad enough to catch any opaque string
+  would redact commit SHAs and rule ids, which are the evidence. Redaction is a
+  second line behind not putting credentials in the artifacts in the first
+  place, not a substitute for it.
+- **`score_run` does not redact `source_path`.** A scorer's name and detail are
+  redacted; the JSON path it was found at is assembled from the artifact's own
+  keys and returned as-is, so a credential used as a *key* in a sink artifact
+  would survive there. Deliberate: that path is how session 3 pins the real sink
+  schema against a real artifact, and a redacted one hides the mis-read it
+  exists to expose. A planlint findings payload has its keys redacted, because
+  nothing downstream depends on their spelling.
 - **Time-of-check to time-of-use.** `check_target` resolves and validates a
   path, then `planlint` opens it. A sufficiently motivated local attacker could
   swap a symlink in between. Not mitigated: everything here runs as one

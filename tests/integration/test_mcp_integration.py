@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -44,16 +43,30 @@ def test_integration_planlint_and_scoring_pipeline(
     proposal = openspec_dir / "proposal.md"
     proposal.write_text("# Feature Proposal\n\nValid description.", encoding="utf-8")
 
-    # 2. Run lint_openspec with a deterministic tool configuration.
-    def completed_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args, 0, stdout='{"findings": []}', stderr="")
-
-    monkeypatch.setattr(
-        "foundry_spike_mcp.planlint.subprocess.run",
-        completed_run,
+    # 2. Run lint_openspec against a real stand-in binary.
+    #
+    # This step used to monkeypatch `foundry_spike_mcp.planlint.subprocess.run`.
+    # That seam disappeared when `run_verb` moved to `Popen`, so a timeout could
+    # reap the whole process group -- and the patch silently stopped
+    # intercepting, leaving the test to execute the real interpreter and read
+    # its exit 2 as a genuine BLOCKED.
+    #
+    # Repointed at a fake binary rather than at the new symbol, which is what
+    # the rest of this suite does and what `mcp_server/tests/conftest.py`
+    # argues for: the failure modes here are properties of real process
+    # handling, and a patched `subprocess` tests the patch.
+    stub = tmp_path / "bin" / "planlint"
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    stub.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "sys.stdout.write('{\"findings\": []}')\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
     )
+    stub.chmod(0o755)
     planlint_cfg = PlanlintConfig(
-        binary=sys.executable,
+        binary=str(stub),
         target=str(proposal),
         allowed_roots=(repo_tree,),
     )

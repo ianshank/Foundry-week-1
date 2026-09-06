@@ -222,3 +222,202 @@ def test_result_shape_is_identical_across_every_path(sink, tmp_path, monkeypatch
     shapes.append(set(score_run("missing").keys()))    # absent artifact
     shapes.append(set(score_run("").keys()))           # rejected argument
     assert len(set(map(frozenset, shapes))) == 1, shapes
+
+
+# --------------------------------------------------------------------------
+# The same two gaps as `planlint`, one module over: a path the OS cannot
+# represent, and text that reached the result already structured and so
+# skipped the redaction that only ran on raw strings.
+# --------------------------------------------------------------------------
+
+TOKEN = "ghp_" + "C" * 36
+
+
+def test_a_nul_byte_in_the_artifact_path_is_blocked_never_raised(sink):
+    sink("run", {"results": [{"scorer": "s", "passed": True}]})
+    result = score_run("run", artifact_path=f"{sink.dir}/run\x00.json")
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_GUARD_REJECTED
+    assert "invalid_path" in result["blocked_detail"]
+
+
+def test_a_nul_byte_in_the_run_id_is_blocked_never_raised(sink):
+    result = score_run("run\x00id")
+    assert result["verdict"] == BLOCKED
+    assert "\x00" not in json.dumps(result)
+
+
+def test_a_credential_in_a_scorer_detail_is_redacted(sink):
+    """The artifact is a file this wrapper did not write, and its text is
+    copied into a result the model reads and a trace an operator commits."""
+    sink(
+        "run",
+        {"results": [{"scorer": "exit_fidelity", "passed": False, "reason": f"used {TOKEN}"}]},
+    )
+    result = score_run("run")
+    assert result["verdict"] == FINDINGS
+    assert TOKEN not in json.dumps(result)
+    assert "[REDACTED:github-token]" in result["scorers"][0]["detail"]
+
+
+def test_a_credential_in_a_scorer_name_is_redacted(sink):
+    sink("run", {"results": [{"scorer": TOKEN, "passed": True}]})
+    result = score_run("run")
+    assert TOKEN not in json.dumps(result)
+
+
+def test_a_non_string_detail_is_left_alone(sink):
+    """Redaction applies to text. A structured detail is passed through rather
+    than stringified, because guessing at its shape is how evidence gets lost."""
+    sink("run", {"results": [{"scorer": "s", "passed": True, "reason": {"code": 7}}]})
+    assert score_run("run")["scorers"][0]["detail"] == {"code": 7}
+
+
+# --------------------------------------------------------------------------
+# `_normalise_passed` string forms, and the read paths that raise.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "written", ["true", "pass", "passed", "false", "fail", "failed", "null", "skipped", "  TRUE  "]
+)
+def test_a_string_verdict_is_refused_rather_than_interpreted(sink, written):
+    """The pinned schema tightened this, and the tightening is right.
+
+    An earlier revision read `"true"` as `True`. That is an interpretation of
+    something the harness did not say in the type JSON has for saying it, and
+    this module's whole subject is not guessing. Only a real boolean or null
+    counts now; anything else is recorded in `ignored` with a reason and
+    excluded from the tally.
+
+    This test previously asserted the lenient reading. The contract changed by
+    a merged decision, so the test follows it -- and what it defends is
+    unchanged: a verdict is never invented from a value that is not one.
+    """
+    sink("run", {"results": [{"scorer": "s", "passed": written}]})
+    result = score_run("run")
+    assert result["scorers"] == []
+    assert len(result["ignored"]) == 1
+    assert "non-boolean" in result["ignored"][0]["why"]
+    assert result["verdict"] == BLOCKED
+    assert result["pass_rate"] is None
+
+
+@pytest.mark.parametrize("written", [True, False, None])
+def test_a_real_json_verdict_is_read_exactly(sink, written):
+    """The other half: the three values the contract does recognise survive
+    unchanged, and `null` stays `null` rather than collapsing either way."""
+    sink("run", {"results": [{"scorer": "s", "passed": written}]})
+    assert score_run("run")["scorers"][0]["passed"] is written
+
+
+def test_a_verdict_that_is_none_of_the_three_is_refused_not_coerced(sink):
+    """0.73 is not a boolean, and guessing which one it means is the defect
+    this module exists to avoid. Under the pinned schema the record is refused
+    outright rather than reported with an `unreadable:` marker."""
+    sink("run", {"results": [{"scorer": "s", "passed": 0.73}]})
+    result = score_run("run")
+    assert result["scorers"] == []
+    assert result["verdict"] == BLOCKED
+    assert result["pass_rate"] is None
+
+
+def test_an_artifact_that_is_not_utf8_is_blocked_never_raised(sink):
+    """UnicodeDecodeError subclasses ValueError as a *sibling* of
+    JSONDecodeError, not a parent, so catching the latter missed it and the
+    'never raises' contract did not hold."""
+    path = sink("run", {"results": []})
+    path.write_bytes(b'{"results": [{"scorer": "s", "passed": \xff\xfe true}]}')
+    result = score_run("run")
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_UNREADABLE
+    assert "UnicodeDecodeError" in result["blocked_detail"]
+
+
+def test_an_unreadable_file_is_blocked_never_raised(sink, monkeypatch):
+    """The filesystem is mocked here, not the module under test: this pins what
+    `score_run` does when a read fails, which is the part that must not raise."""
+    sink("run", {"results": [{"scorer": "s", "passed": True}]})
+
+    def explode(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "read_text", explode)
+    result = score_run("run")
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_UNREADABLE
+    assert "PermissionError" in result["blocked_detail"]
+
+
+def test_a_document_too_deep_to_read_is_blocked_never_an_empty_pass(sink):
+    """Deep nesting is BLOCKED whichever way this document is refused.
+
+    Which refusal fires is a property of the interpreter build, not of this
+    package. `json.loads` recurses in C, and how deep it gets before the stack
+    guard trips differs between 3.10 and 3.12 -- on 3.10 the parse gives out
+    and the answer is `artifact_unreadable`; on 3.12 the parse survives 2000
+    levels, the pinned schema then finds no `results` key at the root, and the
+    answer is `unrecognized_artifact_schema`.
+
+    An earlier version asserted a *message*, and was red on CI only. This one
+    then asserted `artifact_unreadable`, which held while `_collect_scorers`
+    still recursed in Python -- the pin landed on main removed that walk, so
+    the second limit this test used to describe no longer exists, and the
+    assertion went red on 3.12 for the same reason as the first: it named a
+    mechanism rather than the contract.
+
+    What the contract promises is what is asserted below. A document this tool
+    cannot read is refused, with a reason from the closed set, and it never
+    becomes a PASS over an empty scorer list -- which is the failure mode this
+    package exists to catch, and the only outcome here that would be wrong.
+    """
+    path = sink("run", {"results": []})
+    depth = 2_000
+    path.write_text(
+        '{"n": ' * depth + '{"name": "s", "passed": true}' + "}" * depth, encoding="utf-8"
+    )
+    result = score_run("run")
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] in {BLOCKED_ARTIFACT_UNREADABLE, BLOCKED_ARTIFACT_SCHEMA}
+    assert result["blocked_detail"]
+    assert result["pass_rate"] is None
+    assert result["scorers"] == []
+
+
+def test_a_surrogate_in_an_artifact_does_not_cost_the_verdict(sink):
+    """Regression, found by driving the real server over stdio.
+
+    `score_run` returned a correct PASS and the SDK then failed to serialise
+    it, so what reached the model was "Error executing tool score_run" with no
+    verdict field -- the exact failure this package exists to prevent, one
+    layer further out than the rule is usually applied.
+    """
+    path = sink("run", {"results": []})
+    path.write_text('{"results":[{"scorer":"\\ud800","passed":true}]}', encoding="utf-8")
+    result = score_run("run")
+    assert result["verdict"] == PASS
+    # The real assertion: the whole envelope survives an encode to the wire.
+    json.dumps(result, ensure_ascii=False).encode("utf-8")
+
+
+def test_a_surrogate_in_an_artifact_key_does_not_cost_the_verdict(sink):
+    """`source_path` is assembled from artifact keys and is the one
+    externally-derived field that does not flow through `redact`."""
+    path = sink("run", {"results": []})
+    path.write_text('{"results":[{"scorer":"\\ud800","passed":true}]}', encoding="utf-8")
+    result = score_run("run")
+    json.dumps(result, ensure_ascii=False).encode("utf-8")
+
+
+def test_duplicate_verdict_keys_resolve_to_one_documented_answer(sink):
+    """JSON permits duplicate keys and Python keeps the last. Pinned rather
+    than left to be discovered: the surviving verdict is chosen by the parser,
+    so the behaviour should at least be written down."""
+    path = sink("run", {"results": []})
+    path.write_text(
+        '{"results":[{"scorer":"s","passed":true,"passed":null}]}', encoding="utf-8"
+    )
+    result = score_run("run")
+    assert result["scorers"][0]["passed"] is None
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_NO_SCORED_RESULTS

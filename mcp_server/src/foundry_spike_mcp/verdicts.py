@@ -40,6 +40,10 @@ BLOCKED_ARTIFACT_MISSING = "artifact_missing"
 BLOCKED_ARTIFACT_UNREADABLE = "artifact_unreadable"
 BLOCKED_ARTIFACT_SCHEMA = "unrecognized_artifact_schema"
 BLOCKED_NO_SCORED_RESULTS = "no_scored_results"
+#: A setting was present but unusable. Lived as a private copy in both
+#: `planlint` and `scoring`, which is how the one reason not defined here
+#: became the one that could drift between the two tools.
+BLOCKED_CONFIG_ERROR = "configuration_error"
 
 BLOCKED_NOTE = (
     "BLOCKED means the run could not form an opinion. It is not a spec failure "
