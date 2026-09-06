@@ -1,105 +1,279 @@
 # Next steps
 
-Ordered by what unblocks the most. The repository is scaffolding — none of the
-week's actual findings exist yet, and no amount of further engineering here
-substitutes for running the five sessions.
-
-**The blunt version:** this repo is now over-engineered relative to its purpose.
-It is a five-session throwaway spike carrying CI, containers, type checking and
-a hook harness. That was asked for and it is defensible — the tool contract is
-the artifact that survives into week 2, so testing it properly is not waste —
-but do not let the scaffolding become the work. The deliverable is
-`evidence/05-verdict.md`, and it is still empty.
+Rewritten 2026-09-06 against a four-discipline review of `main` and of the open
+pull request #5. The evidence behind every item is in
+[`docs/roadmap/2026-09-06-review.md`](docs/roadmap/2026-09-06-review.md).
 
 ---
 
-## Before session 1
+## Where this actually stands
 
-| # | Action | Why now |
-|---|---|---|
-| 0 | **Add a LICENSE, or make the repo private.** | A public repository with no licence file is all-rights-reserved by default: nobody may legally reuse it, including a future you on another team. Which licence is your call, not one I should make. |
-| 1 | **Decide whether this repo stays public.** | It is public today and will accumulate planlint findings with real spec paths, pasted OpenSpec proposals, MCTS node dumps and model transcripts — from source repos that are private. One click; do it before the first capture, not after. |
-| 2 | `cp .env.example .env` and fill it in | Nothing runs without `PLANLINT_TARGET` and an allow list. Both fail closed. |
-| 3 | `make setup && make test` | Confirms the floor works on your machine before a session is on the clock. |
-| 4 | `make hooks` | Installs the pre-commit secret gate. |
-| 5 | Decide the default branch | `main` exists now but the repository default is still the working branch. Change it in repo settings so pull requests target something stable. |
+`main` is green and carries a well-tested three-valued contract — the artifact
+this week was supposed to produce a decision about. The decision itself exists
+only on an unmerged pull request, and it recommends spending money on a week 2
+while citing a self-check file whose own summary field reads
+`all_expected: false`.
 
----
+That is the whole situation. The scaffolding works. The paperwork does not yet
+support the recommendation it makes. Everything below is ordered by that.
 
-## Open review findings
-
-From the peer review of `2ac6e39`. Findings 1–3 are fixed; 4–11 were carried,
-and this branch closes most of them. What is left:
-
-| # | Finding | State |
-|---|---|---|
-| 4 | `RecursionError` escaped `score_run` | **fixed** |
-| 5 | Unstable result shape | **fixed** — envelope tested across every path |
-| 6 | Zero coverage on scanner, server, hooks | **fixed** — `test_evidence_hygiene.py`, `test_server_smoke.py`, `test_claude_assets.py` |
-| 7 | `noqa` codes with no linter | **fixed** — ruff and mypy in CI; the one remaining `S310` sits above real scheme validation |
-| 8 | Baseline flag probe compared inconsistent substrings | **fixed** |
-| 9 | Five unreachable verbs in the allow list | **fixed** — `run_verb` reaches all six |
-| 10 | Evidence cited gitignored paths | **fixed** — `promote_trace.py` |
-| 11 | Scan skipped `snippets/`, `configs/` | **fixed** |
-| 12 | `mcp/` shadowed the SDK as a namespace package | **fixed** — renamed `mcp_server/` |
-| — | `_selfcheck` widens its own `PLANLINT_ALLOWED_ROOTS` | **open**. Justified (the temp dir is tool-created, not model-supplied) but it is still the tool relaxing its own guard to make a demo pass — the exact shape step 5 asks about. Should become an explicit parameter. |
-| — | `traces/` has no index or template | **open**. `agent-probes.md` says what to record; nothing structures where. Four saved conversations with no index cannot be diffed. |
-| — | No session tracker | **open**. A five-session time-boxed spike with no per-session done-when checklist. The likeliest way the week overruns quietly. |
-| — | GitHub Actions on floating major tags | **open, accepted**. `@v4`/`@v5`/`@v2` rather than SHAs. Bounded by `contents: read` and no secrets; dependabot makes updates reviewable. SHA-pin before copying this workflow anywhere with write permissions. |
-| — | No dependency lockfile | **open, accepted**. One direct dependency bounded `>=1.2,<3`, but transitives resolve fresh every CI run, so a transitive break shows up as an unexplained red rather than a diff. A lockfile is the fix; the maintenance cost is real for a five-session spike. |
-| — | TOCTOU between `check_target` and the subprocess | **open, accepted**. Documented in `SECURITY.md`. Closing it needs an fd-based API planlint does not offer. |
+**The good news is the size of the gap.** Turning an unsupportable "proceed"
+into a defensible verdict — in either direction — is roughly half a day of
+capture work, listed as Track C. It is the only work on this page the week
+actually asked for, and it is smaller than the pull request currently sitting
+in front of it.
 
 ---
 
-## During the week
+## Track A — Two live risks, before anything else
 
-**Session 3 is smaller than the runbook assumes.** The server is written and
-tested. What session 3 actually does:
+About twenty minutes in total. Do these first because one of them is a
+credential path.
 
-1. Confirm planlint's real JSON flag spelling — `make baseline` reports the
-   candidates; write the exact spelling into `PLANLINT_JSON_FLAG`.
-2. Point `score_run` at a real sink artifact and **narrow `_collect_scorers`**
-   to the pinned schema. It currently walks tolerantly and reports where it
-   found each verdict; once the real shape is known, tighten it and record the
-   shape in `decisions/`.
-3. `make selfcheck` — writes `evidence/03-mcp-selfcheck.json`.
+| # | Action | Why | Owner |
+|---|---|---|---|
+| A1 | `.gitignore`: replace `mcp/mcp.json` with `mcp_server/mcp.json` and `**/mcp.json` | The directory was renamed; `git check-ignore mcp_server/mcp.json` returns nothing. The file the runbook tells you to fill with real paths and possibly a token is committable today. PR #5 does not fix this. | SWE |
+| A2 | Set the repository default branch to `main` | It is still `claude/foundry-toolkit-spike-prep-d92qfh`, the stale prep branch that PR #1 was merged *from*. | SWE |
+| A3 | Then close dependabot PRs #2, #3, #4 | All three target that stale branch, because `dependabot.yml` sets no `target-branch` and inherits the default. Merging them changes nothing on `main`. Once A2 lands they regenerate against the right base. | SWE |
+| A4 | Decide LICENSE, or make the repository private | Public with no licence is all-rights-reserved: nobody may reuse it, including a future you. PR #5 proposes MIT. This is the owner's call and it gates everything else about publishing captures. | VP / owner |
 
-Spend the reclaimed time on the bake-off, which is the part that needs
-judgement and cannot be scripted.
+A2 is the root cause of A3 and was already flagged in the previous revision of
+this file. It is still open, and it means every new pull request opened without
+an explicit base targets a branch nobody is developing on.
 
-**Promote every capture.** `python3 scripts/promote_trace.py traces/raw/<run>`
-before citing it from `evidence/02-bakeoff.md`. It refuses on a scan hit.
+A4 is a decision, not a task. It has been open since the first review and it
+gates the capture work in Track C, because that work commits model transcripts
+derived from private repositories.
 
 ---
 
-## After the verdict
+## Track B — Split PR #5
 
-Gated entirely on `evidence/05-verdict.md`. Do not start any of this before it
-is written.
+**Recommendation: do not merge as-is.** Three unrelated kinds of change in 63
+files, and the week's actual deliverable is trapped behind the other two. Its
+head commit is not green.
 
-**If "stop at local bake-off bench":** archive this repo, copy the bake-off
-matrix into the decision log, and close `decisions/0001`. The tool contract and
-its test suite are still worth keeping as a reference for how the three-valued
-seam should look — that is a real outcome, not a consolation.
+Split into three, in this order:
 
-**If "proceed to a week-2 hosted twin":** the stdio server does not carry over.
-A hosted Foundry agent consumes *remote* MCP endpoints; a private one needs a
-virtual network with a dedicated MCP subnet, in practice Container Apps with
-internal-only ingress. What carries is the contract. Budget for:
+**B1 — Evidence (merge first).** The `evidence/00-*` captures, the self-check
+JSON, the trace and its index, the session tracker, the verdict, the two filled
+probe fixtures, the `__main__.py` self-check change, `promote_trace.py
+--dest-root`, and the `.gitignore` additions.
 
-- Azure subscription, Foundry project, Foundry User role (Foundry Project
-  Manager to create connections)
-- A reachable remote MCP endpoint, and the identity work around it
-- Trace egress as a *decision*, not a toggle: a shared run/trace ID contract,
-  secret masking on the export path, and a field allow list — settled before
-  the first export, not after
-- Triage capacity for the `Agents` open-issue backlog, which a second
-  eval/trace plane competes with
+Corrections required before it lands:
+- Copy the filled matrix to `evidence/02-bakeoff.md`. The decision record cites
+  that path and it does not exist; the template was filled in place.
+- Untick the four completion boxes on a matrix with six blank cells, or fill the
+  cells. The template's own rule is that "dropped" is an answer and blank is not.
+- Correct the verdict rows that claim results for probes that were not run, and
+  the resource-usage row that reports a VRAM figure no script measures and a
+  latency figure that disagrees with the committed measurement.
+- Scrub the Windows user path from `evidence/03-mcp-selfcheck.json`.
 
-**Three things that stay true either way.** Foundry is not the eval source of
-truth — its built-in evaluators are reference-similarity metrics and an
-in-vendor judge conflicts with the verifier-outside-the-model-under-test rule.
-Model Conversion is Windows-targeted and emits neither Hailo nor Jetson
-artifacts, so the edge repos keep their pipelines. And the `command_actions.py`
-allow list stays authoritative; MCP tool descriptions and results are untrusted
-input, so anything Foundry adds there is defence in depth.
+**B2 — The scoring contract change (hold).** `scoring.py` now requires a root
+`results` list and blocks the entire run if any single record is malformed.
+Seven contract tests were deleted to match. `NEXT_STEPS.md` on `main` made
+pinning conditional on seeing a real sink artifact, and none exists — the demo
+eval aborts before writing one, because the harness refuses to gate on a judge
+with no calibration artifact.
+
+Pinning a guessed schema converts "we read something odd, here is what we found"
+into "refused, no data." Hold this until Track C produces an artifact, then land
+it with a `decisions/0002` entry recording the pinned shape. The contract-guard
+skill names changing contract tests without a decision record as the one thing
+not to do.
+
+**B3 — Scaffolding (trim hard, or drop).** The probe decomposition is defensible
+on its own merits. The seven new test directories are not: about a third of the
+new tests exercise new behaviour, and the rest assert that Python is at least
+3.10, that the README is non-empty, that functions are callable, or re-run cases
+already covered. If this lands at all: delete the sanity layer, fold the
+non-duplicate cases into the existing files, restore the coverage floor to 85
+(CI currently overrides `pyproject.toml` with `--fail-under=80` on the command
+line), drop the UTF-16 `requirements.txt`, and reconcile every published test
+count to one measured number.
+
+---
+
+## Track C — Make the verdict decidable
+
+**This is the week's actual work: roughly half a day.** Nothing else on this
+page substitutes for it. C4 needs VS Code and Agent Builder in front of a human,
+so it does not compress the way the others do.
+
+| # | Action | Effort | Owner |
+|---|---|---|---|
+| C0 | Get one real eval-harness sink artifact by supplying the calibration artifact id the demo config is missing, then run `score_run` against it | 45 min | SWE |
+| C1 | Build a target that genuinely produces findings at or above the threshold, and re-run `make selfcheck` until `all_expected` is `true` | 30 min | SWE |
+| C2 | Run the exit-2 fixture against at least one model and promote the trace | 20 min | SWE |
+| C3 | Run `make probe` across a second and third slot so the verifier row has more than one model in it | 30 min | SWE |
+| C4 | Run the four agent probes and save the conversations, including one BLOCKED or refused call | 45 min | SWE |
+| C5 | Rewrite the verdict against what C1–C4 actually produced | 45 min | VP / owner |
+
+C1 is the one that matters most. Exit 1 is the only leg of the three-valued
+contract never demonstrated end to end against the real binary, and it is the
+row the current verdict marks as verified. The wrapper is almost certainly
+correct — the mapping is unit-tested and exit 0 and exit 2 both check out
+live — but "almost certainly correct" is not what the document claims.
+
+C0 unblocks more than it looks like. `score_run` is half the tool surface and
+appears in no evidence file at all, because the demo eval aborts before writing
+a sink artifact: the harness refuses to gate on a judge with no calibration
+artifact id. Until one artifact exists, the scorer's `null` handling is unproven
+outside unit tests and the schema pin in PR #5 has nothing to pin against. If
+C0 turns out to need harness changes rather than a config field, that is
+runbook stop condition 3 and it should be recorded as one, not worked around.
+
+**If C3 and C4 cannot be afforded, that is fine, and it is not a failure.** The
+honest verdict then reads *bake-off bench only: one model held the verifier
+probe, the comparative claim is unsupported.* The runbook counts stopping on a
+stop condition as a success. What is not available is "proceed, spend the money"
+on one model, one prompt, one run.
+
+Note for C5: the decision record's fourth criterion — that the Playground gives
+a faster read than the existing bench — has no field anywhere in the verdict
+template, and no evidence. Either add the field and answer it, or record it as
+unanswered. It is the criterion the decision record itself flags as most likely
+to be answered generously, which is a good reason not to leave it implicit.
+
+---
+
+## Track D — The four reproduced defects
+
+All four were reproduced against the tree. Together they are under half a day,
+and all of them sit on code that would carry into a hosted week 2.
+
+| # | Defect | Fix | Effort |
+|---|---|---|---|
+| D1 | A NUL byte in a model-supplied path escapes `lint_openspec` and `score_run` as `ValueError`, so the model sees a protocol error with no verdict field | Catch `ValueError` in `guards.check_target`, map to `BLOCKED / guard_rejected: invalid_path` | 30 min |
+| D2 | `make selfcheck` cannot pass in the configuration `.env.example` documents: with `PLANLINT_ALLOWED_ROOTS` unset it replaces the target fallback with the scratch directory | Stop mutating `os.environ`; append the scratch directory to a config object and pass it through `run_verb(config=)` | 45 min |
+| D3 | A findings payload that parses as valid JSON is neither truncated nor redacted; both controls live in the unparsable branch only | Bound and redact the parsed payload; set a `findings_truncated` flag | 30 min |
+| D4 | `scripts/scan_evidence.py` on a path outside the repository ends in a traceback | Handle the out-of-tree case | 20 min |
+
+D1 is the only true contract breach on the list: it is the single place where
+*an exception is not a verdict* does not hold.
+
+D3 is more than a size problem. With the limit set to 100 bytes a valid payload
+came back at 4.5 MB, and because `guards.redact` runs in the same branch as the
+truncation, a credential inside valid JSON output reaches the model and any
+trace built from it unscrubbed. `SECURITY.md` lists that surface as controlled.
+It is controlled only on the unparsable path.
+
+D2 is currently recorded as an open finding describing the tool **widening** its
+own guard. It narrows it. In the documented default configuration the step-3
+self-check cannot pass at all, which is worth knowing before session 3 rather
+than during it.
+
+Two more, cheap:
+
+- **D5 — Test that policy is not configuration.** This is the repository's one
+  stated architectural opinion and it has no test. A parametrized test that sets
+  plausible environment variables and asserts the refusals are unchanged, plus a
+  static check that `guards.py` imports no `os`, is about ten lines. *(SQE, 20
+  min.)*
+- **D6 — Add `coverage` to the `[dev]` extras.** `make validate` is red
+  immediately after `make setup` on a fresh clone; CI installs it separately,
+  which is how this survived. *(SWE, 5 min.)*
+- **D7 — Reconcile the declared SDK floor with what is tested.** `mcp>=1.2` is
+  advertised, but the smoke suite resolves a 2.x module path at import time, so
+  on mcp 1.2.0 it errors during collection under `REQUIRE_MCP=1` and skips
+  silently without it. Either fix the loader test and add a 1.x leg to CI, or
+  narrow the floor to what is actually exercised. *(SQE, 30 min.)*
+
+---
+
+## Track E — Gated entirely on the verdict
+
+Do none of this before Track C is written up.
+
+**If the verdict is "bench only":** archive the repository, copy the matrix into
+the decision log, close `decisions/0001`. The tool contract and its suite are
+worth keeping as a reference for how a three-valued seam should look. That is a
+real outcome, not a consolation prize.
+
+**If the verdict is "proceed":** the stdio server does not carry. A hosted agent
+consumes *remote* MCP endpoints, and a private one needs a virtual network with
+a dedicated MCP subnet. What carries is the contract, and the seams for it
+mostly exist already — `run_verb(config=)` and `score_run(config=)` take
+injected configuration today; `build_server()` should too.
+
+What a hosted deployment will hit first, in order:
+
+1. **Process-global state.** Configuration is re-read from `os.environ` per call
+   and logging configures itself at import. A long-lived multi-tenant process
+   wants configuration injected, not ambient.
+2. **No concurrency cap.** N tool calls means N `planlint` processes, each with a
+   120-second timeout and no ceiling.
+3. **Grandchildren survive a timeout.** `subprocess.run(timeout=)` kills the
+   direct child only. Use `start_new_session=True` and kill the process group.
+4. **Unbounded payloads** (D3) stop being a local memory question and become a
+   wire and context question.
+5. **The identity model is "absolute path under an absolute root."** There is no
+   caller or tenant identity in the allow list, and the target repository must
+   be on the server's disk.
+
+Budget separately for the Azure subscription, the Foundry project and roles, the
+reachable remote endpoint and its identity work, trace egress as a decision
+rather than a toggle, and triage capacity for the `Agents` backlog that a second
+eval plane competes with.
+
+---
+
+## Do not do
+
+Named explicitly, because the repository's failure mode is scaffolding crowding
+out the deliverable.
+
+- No further CI, container, or type-checker work. The four-job split is well
+  designed; leave it alone apart from restoring the coverage floor and
+  installing the SDK in the coverage job so `server.py` counts.
+- No lockfile. One direct dependency, bounded. The maintenance cost is real and
+  the payoff for a five-session spike is not.
+- No TOCTOU work. Documented, accepted, and closing it needs an API `planlint`
+  does not offer.
+- No SHA-pinning of Actions until this workflow is copied somewhere with write
+  permissions or secrets.
+- No new test layers. Coverage is 88–92% depending on whether the SDK is
+  installed. The gap is specific invariants, listed as D5, not volume.
+- No slot D. The runbook already permits dropping it and PR #5 dropped it.
+
+---
+
+## Open findings, current
+
+Replaces the previous table, which recorded several items as fixed that are not.
+
+| Finding | State |
+|---|---|
+| `_selfcheck` and `PLANLINT_ALLOWED_ROOTS` | **Open, and mis-described.** It narrows, not widens; see D2 |
+| `traces/` has no index | **Fixed on PR #5**, not on `main` |
+| No session tracker | **Fixed on PR #5**, not on `main` |
+| Evidence cites gitignored paths | **Open.** `evidence/02-bakeoff.template.md` still points at `traces/raw/`, the exact defect recorded as fixed under finding #10 |
+| `mcp.json` is gitignored | **False, and a live risk.** See A1 |
+| `make scan` reaches `snippets/` | **Fixed in code, stale in `snippets/README.md`**, which still says the opposite |
+| NUL byte escapes as an exception | **Open.** See D1 |
+| Findings payload unbounded and unredacted | **Open.** See D3 |
+| Declared SDK floor `mcp>=1.2` cannot run its own smoke suite | **Open.** See D7 |
+| Scanner crashes out of tree | **Open.** See D4 |
+| "Policy is not configuration" untested | **Open.** See D5 |
+| `make validate` red after `make setup` | **Open.** See D6 |
+| Outcome vocabulary differs across three documents | **Open.** Keep / bench-only / drop, versus proceed / stop at bench, versus sidecar or not |
+| Criterion 4 has no field in the verdict template | **Open.** See C5 |
+| Actions on floating major tags | **Open, accepted** |
+| No dependency lockfile | **Open, accepted** |
+| TOCTOU between check and subprocess | **Open, accepted** |
+
+---
+
+## Three things that stay true either way
+
+Unchanged from the previous revision, because nothing in this review disturbs
+them.
+
+Foundry is not the eval source of truth: its built-in evaluators are
+reference-similarity metrics, and an in-vendor judge conflicts with the
+verifier-outside-the-model-under-test rule. Model Conversion is Windows-targeted
+and emits neither Hailo nor Jetson artifacts, so the edge repositories keep their
+pipelines. And the `command_actions.py` allow list stays authoritative — MCP tool
+descriptions and results are untrusted input, so anything Foundry adds there is
+defence in depth.
