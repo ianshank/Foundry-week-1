@@ -16,7 +16,6 @@ traces/raw/
 evidence/raw/
 
 .git/
-.github/
 .venv/
 venv/
 __pycache__/
@@ -24,13 +23,26 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 *.egg-info/
 dist/
 build/
 .DS_Store
 
-# Docs are not needed to run the suite, and excluding them keeps a docs-only
-# edit from invalidating the layer cache.
-*.md
-!README.md
-docs/
+# Markdown and `docs/` are NOT excluded, though an earlier revision excluded
+# both "to protect the layer cache". Two things were wrong with that.
+#
+# It protected nothing: the only expensive layer is the pip install, which
+# runs *before* `COPY . .`, so a docs edit already invalidated nothing but the
+# copy itself. And the image's whole purpose is to run the same suite CI runs
+# -- a suite that reads markdown. `tests/test_claude_assets.py` resolves every
+# path a skill or agent names, and `.claude/**/*.md` survived only because
+# `*.md` matches a single path segment and those files are nested. A skill that
+# named `RUNBOOK.md` would have passed on a laptop and failed in the container,
+# which is the one disagreement this image exists to settle.
+#
+# `.github/` is likewise kept: it is small, and excluding it would make the
+# container's answer differ from CI's for anything that reads a workflow.

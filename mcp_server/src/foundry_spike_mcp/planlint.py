@@ -31,7 +31,6 @@ Two structural properties worth stating, because both were review findings:
 
 from __future__ import annotations
 
-import json
 import shlex
 import shutil
 import subprocess
@@ -40,10 +39,16 @@ from pathlib import Path
 from typing import Any
 
 from . import guards
-from .config import ConfigError, PlanlintConfig, load_planlint_config
+from .config import (
+    CONFIG_ERROR_DETAIL_LIMIT,
+    ConfigError,
+    PlanlintConfig,
+    load_planlint_config,
+)
 from .logging_setup import get_logger, log_result
 from .verdicts import (
     BLOCKED,
+    BLOCKED_CONFIG_ERROR,
     BLOCKED_GUARD_REJECTED,
     BLOCKED_NOTE,
     BLOCKED_TIMEOUT,
@@ -53,7 +58,6 @@ from .verdicts import (
     verdict_for_exit_code,
 )
 
-BLOCKED_CONFIG_ERROR = "configuration_error"
 BLOCKED_PROCESS_ERROR = "process_error"
 
 #: Keys present on every result, so callers never have to probe for existence.
@@ -126,13 +130,24 @@ def _envelope(**overrides: Any) -> dict[str, Any]:
 
 def _blocked(reason: str, detail: str, limit: int, **extra: Any) -> dict[str, Any]:
     """Build a BLOCKED result. The only way this module reports 'I could not
-    look' -- there is deliberately no other constructor for it."""
-    return _envelope(
+    look' -- there is deliberately no other constructor for it.
+
+    It logs, and that is the point of routing every refusal through here.
+    `log_result` used to be called only after a subprocess returned, so every
+    BLOCKED that happened *before* execution -- a bad config, a refused verb, a
+    target outside the allow list, a missing binary -- produced no log line at
+    all. Those are the most common refusals, and `logging_setup` claims in its
+    own docstring to record "the reason attached to every refusal". Logging
+    here makes that true by construction rather than by remembering.
+    """
+    result = _envelope(
         verdict=BLOCKED,
         blocked_reason=reason,
         blocked_detail=guards.clean(detail, limit),
         **extra,
     )
+    log_result(_log, "planlint", result)
+    return result
 
 
 def _read_findings(
@@ -157,9 +172,11 @@ def _read_findings(
     * **Redacted.** A credential inside *valid* JSON went straight back to the
       model, because redaction only ran in the parse-failure branch. It now
       runs on the parsed structure, where it cannot corrupt the JSON.
-    * **Never raises.** `json.loads` raises `RecursionError`, which is not a
-      `JSONDecodeError`, on deeply nested input; the redaction walk is
-      iterative for the same reason.
+    * **Never raises.** `json.loads` raises several things that are not
+      `JSONDecodeError` -- `RecursionError` on deep input, `UnicodeDecodeError`
+      and the integer-digit-limit `ValueError` on hostile input -- so the base
+      classes are caught rather than a list of subclasses that has already been
+      wrong three times. The redaction walk is iterative for the same reason.
     """
     if not stdout.strip():
         return None, None, None, False
@@ -190,13 +207,20 @@ def _read_findings(
         )
 
     try:
-        parsed = json.loads(stdout)
-    except (json.JSONDecodeError, RecursionError) as error:
+        parsed = guards.loads_strict(stdout)
+    except (ValueError, RecursionError) as error:
         # Unparsable stdout downgrades the *evidence*, never the verdict. On
         # exit 2 this is the normal case: the payload is a usage message, and
-        # BLOCKED is already correct without it. RecursionError is here because
-        # deeply nested JSON raises it from inside `json.loads`, and it is not
-        # a JSONDecodeError.
+        # BLOCKED is already correct without it.
+        #
+        # `ValueError`, not `JSONDecodeError`. Three separate defects in this
+        # repository's history were the same mistake: `json.loads` raises
+        # several things that are not `JSONDecodeError`, and catching the
+        # subclass caught only the one that had been noticed. `JSONDecodeError`
+        # and `UnicodeDecodeError` are both `ValueError` subclasses, as is the
+        # integer-digit-limit error a 5000-digit number raises. Catching the
+        # base class fixes the class of bug rather than its third instance.
+        # `RecursionError` is separate: it descends from `RuntimeError`.
         return (
             None,
             f"stdout is not usable JSON: {type(error).__name__}: {error}",
@@ -236,7 +260,7 @@ def run_verb(
     except ConfigError as error:
         # A misconfigured run could not form an opinion. Substituting defaults
         # here would hide an operator mistake behind a plausible-looking result.
-        return _blocked(BLOCKED_CONFIG_ERROR, str(error), 500)
+        return _blocked(BLOCKED_CONFIG_ERROR, str(error), CONFIG_ERROR_DETAIL_LIMIT)
 
     limit = config.stderr_limit
 
@@ -369,7 +393,7 @@ def lint_openspec(
     try:
         config = config or load_planlint_config()
     except ConfigError as error:
-        return _blocked(BLOCKED_CONFIG_ERROR, str(error), 500, verb="validate")
+        return _blocked(BLOCKED_CONFIG_ERROR, str(error), CONFIG_ERROR_DETAIL_LIMIT, verb="validate")
 
     try:
         threshold = guards.check_fail_on(fail_on, config.fail_on_values)

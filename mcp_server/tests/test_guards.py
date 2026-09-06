@@ -321,3 +321,92 @@ def test_a_key_collision_is_disambiguated_deterministically():
 def test_a_key_that_needs_no_redaction_is_untouched():
     out, _ = guards.redact_structure({"rule": "SPEC001", "line": 4}, max_depth=16)
     assert out == {"rule": "SPEC001", "line": 4}
+
+
+# --------------------------------------------------------------------------
+# Authorization headers. A policy change, so it gets a test either way.
+#
+# The earlier pattern consumed one whitespace-delimited token after the
+# separator, which on the standard `Authorization: Bearer <token>` redacted the
+# word "Bearer" and left the credential in the evidence. It removed the label
+# and kept the secret. A weakened assertion in the payload tests was hiding it.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        pytest.param(
+            "authorization: Bearer abc123secretvalue", "abc123secretvalue", id="header-bearer"
+        ),
+        pytest.param(
+            "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+            "dXNlcjpwYXNzd29yZA",
+            id="header-basic",
+        ),
+        pytest.param("authorization=xyz789abc", "xyz789abc", id="header-equals"),
+        pytest.param(
+            "Bearer abc123secretvalue", "abc123secretvalue", id="bare-scheme-no-header"
+        ),
+        pytest.param(
+            '"Authorization": "Bearer sk_live_9999999999"',
+            "sk_live_9999999999",
+            id="inside-json",
+        ),
+    ],
+)
+def test_an_authorization_credential_does_not_survive_redaction(text, secret):
+    redacted = guards.redact(text)
+    assert secret not in redacted
+    assert "REDACTED" in redacted
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "bearer of bad news",
+        "the basic case",
+        "rule G009 at line 42",
+        "commit 4f2a1c9b",
+        "basic auth is described in the spec",
+    ],
+)
+def test_ordinary_prose_is_not_redacted_as_a_credential(evidence):
+    """A rule broad enough to redact evidence is its own failure. `bearer` and
+    `basic` are English words as well as auth schemes, so the pattern requires
+    a credential-shaped run after them."""
+    assert guards.redact(evidence) == evidence
+
+
+# --------------------------------------------------------------------------
+# Non-finite floats: valid Python, not valid JSON, and fatal on the wire.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_a_non_finite_float_is_refused_rather_than_carried(literal):
+    """`json.loads` accepts these and `json.dumps` emits them back, so a
+    payload carrying one parses here and then re-serialises into a frame the
+    client cannot read. On a stdio server that is not a visible error; it is
+    the tool disappearing."""
+    with pytest.raises(ValueError):
+        guards.loads_strict(f'{{"x": {literal}}}')
+
+
+def test_ordinary_json_still_parses():
+    assert guards.loads_strict('{"a": [1, 2.5, null, true, "x"]}') == {
+        "a": [1, 2.5, None, True, "x"]
+    }
+
+
+def test_a_key_collision_stays_linear_on_adversarial_input():
+    """Many keys redacting to the same marker is the shape this function is
+    written to survive. The first implementation probed for a free ordinal and
+    went quadratic: 4000 colliding keys cost most of a second in pure scanning.
+    """
+    token = "ghp_" + "E" * 36
+    payload = {f"{token}{index}": index for index in range(4000)}
+    redacted, _ = guards.redact_structure(payload, max_depth=8)
+    # Every key survives as its own entry: nothing was silently overwritten.
+    assert len(redacted) == 4000
+    assert not any(token in key for key in redacted)

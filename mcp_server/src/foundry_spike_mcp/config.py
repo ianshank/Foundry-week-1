@@ -65,6 +65,11 @@ DEFAULT_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 DEFAULT_FINDINGS_MAX_BYTES = 256 * 1024
 #: Depth ceiling for the redaction walk over a parsed payload.
 DEFAULT_FINDINGS_MAX_DEPTH = 64
+#: Truncation limit for the detail on a configuration failure. Deliberately not
+#: configurable, and it cannot be: the thing that failed *is* the loader, so
+#: there is no trustworthy `stderr_limit` to read at that point. Named here
+#: rather than repeated as a bare `500` at three call sites.
+CONFIG_ERROR_DETAIL_LIMIT = 500
 DEFAULT_LOG_LEVEL = "WARNING"
 DEFAULT_LOG_FORMAT = "text"
 

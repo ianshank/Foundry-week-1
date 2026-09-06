@@ -47,7 +47,17 @@ jobs:
         run: python -m pytest -q
 
       - name: Shell scripts parse
-        run: bash -n scripts/00-baseline.sh .githooks/pre-commit .claude/hooks/check-edited-file.sh
+        # Discovered, not listed. The three paths were hard-coded here, in the
+        # Makefile and in the pre-commit hook, so a fourth script would have
+        # been checked by none of them. `make shellcheck` runs the same set.
+        run: |
+          set -euo pipefail
+          mapfile -t scripts < <(
+            { git ls-files 'scripts/*.sh' '.claude/hooks/*.sh' '.githooks/*'; } | sort -u
+          )
+          test "${#scripts[@]}" -gt 0 || { echo "no shell scripts found -- discovery is broken"; exit 1; }
+          printf 'checking %d script(s)\n' "${#scripts[@]}"
+          bash -n "${scripts[@]}"
 
   transport:
     name: transport (${{ matrix.sdk }})

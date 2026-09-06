@@ -27,9 +27,29 @@ print(tool_input.get("file_path") or "")
 [ -n "$file_path" ] || exit 0
 [ -f "$file_path" ] || exit 0
 
+# The harness assets: skills, agents, settings, hooks, and the config files
+# that name paths inside the repo. These break *silently* -- a skill pointing
+# at a moved file, a hook command whose script lost its +x bit, a gitleaks
+# allowlist still written against the old `mcp/` directory name. None of that
+# surfaces on the next edit; it surfaces weeks later as "the model ignored the
+# skill" or a red CI job nobody associates with a rename. `test_claude_assets.py`
+# checks all of it deterministically in well under a second, which is cheap
+# enough to run on the edit that caused it.
+case "$file_path" in
+  *.claude/skills/*|*.claude/agents/*|*.claude/settings.json|*.claude/hooks/*|*/Makefile|Makefile|*.gitleaks.toml)
+    if command -v python3 >/dev/null 2>&1; then
+      if ! output="$(python3 -m pytest tests/test_claude_assets.py -q --no-header 2>&1)"; then
+        printf 'Editing %s broke the harness assets:\n%s\n' "$file_path" "$output" >&2
+        printf 'These are deterministic checks -- a failure is a real broken reference, not flakiness.\n' >&2
+        exit 2
+      fi
+    fi
+    ;;
+esac
+
 case "$file_path" in
   *.py) ;;
-  *.sh)
+  *.sh|*/.githooks/*|.githooks/*)
     if ! output="$(bash -n "$file_path" 2>&1)"; then
       printf 'Shell syntax error in %s:\n%s\n' "$file_path" "$output" >&2
       exit 2

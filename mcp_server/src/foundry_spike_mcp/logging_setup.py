@@ -34,6 +34,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .config import LogConfig, load_log_config
+from .verdicts import BLOCKED
 
 LOGGER_NAME = "foundry_spike_mcp"
 
@@ -45,6 +46,10 @@ _CONTEXT_KEYS = (
     "verdict",
     "exit_code",
     "blocked_reason",
+    # The reason names the *category*; the detail says which path, which verb
+    # or which variable. Without it a trace can say `guard_rejected` and still
+    # leave an operator guessing which of five guards refused.
+    "blocked_detail",
     "duration_ms",
     "target",
     "run_id",
@@ -140,12 +145,17 @@ def log_result(logger: logging.Logger, tool: str, result: Mapping[str, Any]) -> 
         "verdict": verdict,
         "exit_code": result.get("exit_code"),
         "blocked_reason": result.get("blocked_reason"),
+        "blocked_detail": result.get("blocked_detail"),
         "duration_ms": result.get("duration_ms"),
         "target": result.get("target"),
         "run_id": result.get("run_id"),
     }
     context = {key: value for key, value in context.items() if value is not None}
-    if verdict == "BLOCKED":
+    # The constant, not the literal. Renaming the verdict while a string here
+    # still read "BLOCKED" would silently demote every refusal to INFO, which
+    # is exactly the record an operator needs and the one they would not miss
+    # until they went looking for it.
+    if verdict == BLOCKED:
         logger.warning("%s could not evaluate", tool, extra=context)
     else:
         logger.info("%s returned %s", tool, verdict, extra=context)

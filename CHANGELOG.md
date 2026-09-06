@@ -9,6 +9,93 @@ to lose by accident.
 
 ## [Unreleased]
 
+### Fixed (four more places an exception stood in for a verdict)
+
+- **A NUL byte in a model-supplied path escaped `guards.check_target` as a bare
+  `ValueError`.** `Path.resolve` raises rather than returns for a path the
+  operating system cannot represent — an embedded NUL is `ValueError`, a symlink
+  loop is `OSError`. Both arrive from a *model-supplied* argument, so letting
+  them through handed the model a framework error with no verdict field: the one
+  thing this package exists to prevent. Now a `GuardRejection` with reason
+  `invalid_path`. The message deliberately does not echo the target — a NUL byte
+  pasted back into a JSON result is a second problem on top of the first.
+- **The same call in `config._abs_paths` escaped every `except ConfigError`.**
+  `ConfigError` *subclasses* `ValueError` and not the other way round, so a bare
+  `ValueError` from `resolve` went past all of them. A malformed setting is now
+  BLOCKED, and the result says which variable was wrong.
+- **A sink artifact that is not valid UTF-8 raised `UnicodeDecodeError` out of
+  `score_run`.** It sits beside `JSONDecodeError` under `ValueError` rather than
+  under it, so the existing handler missed it. Refused rather than decoded with
+  replacement: substituting U+FFFD into a scorer name would let a run report on
+  evidence it could not actually read.
+- **A findings payload that parsed was neither size-bounded nor redacted.**
+  Redaction and the bounded excerpt only ever ran on the branch where
+  `json.loads` *failed* — the uncommon one. On the common branch a credential
+  inside valid JSON went back to the model verbatim, and a valid 30 MB document
+  was returned whole. Both are closed in `planlint._read_findings`, which can
+  only downgrade the evidence: exit 1 with a payload too large to hand back is
+  still FINDINGS.
+
+### Added (the evidence path)
+
+- **`guards.redact_structure`** — redacts every string inside an already-parsed
+  payload, dict keys included. Redacting the raw JSON *text* before parsing
+  would be simpler and is wrong: one credential pattern consumes to the next
+  whitespace, so on `{"authorization": "Bearer abc"}` it eats the closing quote
+  and leaves text that no longer parses. Structure first, then strings. The walk
+  is iterative because a recursive one raises `RecursionError` on a deeply
+  nested document — the same trap `json.loads` sets, one layer further in — and
+  still depth-bounded, because a payload shaped by an attacker can nest far
+  enough to exhaust memory rather than stack. Redacting keys introduces a
+  collision two different credentials share; the second is suffixed rather than
+  left to overwrite the first, which would drop evidence silently in the exact
+  path the function exists to defend.
+- **`findings_truncated`** in the `lint_openspec` / `run_verb` envelope, `false`
+  rather than `null` where no payload was ever read. Nothing was truncated, and
+  that is a fact rather than an absence; a caller branching on the key should
+  not have to treat null as a third state.
+- **`FOUNDRY_SPIKE_FINDINGS_MAX_BYTES`** (262144) and
+  **`FOUNDRY_SPIKE_FINDINGS_MAX_DEPTH`** (64). The size is measured on the raw
+  stream *before* `json.loads`, so an oversized payload is never built into an
+  object at all — parsing first to find out whether the result is too big to
+  keep is the exhaustion this prevents. Measured in **UTF-8 bytes**, because the
+  setting is named in bytes and `stdout` arrives decoded: 100k CJK characters
+  are 300k bytes and would have walked through a ceiling counting code points.
+  Set far below `EVAL_MAX_ARTIFACT_BYTES`, which bounds a file a human chose,
+  where this bounds a subprocess's output stream.
+- **`config=` on `lint_openspec`.** Not part of the MCP tool surface — a model
+  never supplies it. It lets in-process callers (`__main__`'s self-check, the
+  tests) vary configuration without mutating `os.environ`, which is global,
+  order-dependent and has bitten this repository once already.
+- **`mcp_server/tests/test_policy_is_not_configuration.py`** — pins the
+  invariant that `README.md`, `SECURITY.md`, `config.py`'s docstring and the C4
+  component view all state in prose. An opinion four documents repeat is worth
+  one test.
+- **Dev extras carry the linters.** `[dev]` held `pytest` alone, so
+  `make setup && make validate` was red on a fresh clone at the first of three
+  steps — CI installs `ruff`, `mypy` and `coverage` separately and never
+  noticed. The floor for a contributor and the floor for CI should be the same
+  floor.
+
+### Changed
+
+- **The `.gitignore` rule for `mcp.json` is path-independent.** It named
+  `mcp/mcp.json` until that directory was renamed to `mcp_server/`, at which
+  point it silently protected nothing — while `RUNBOOK.md` step 3.5 went on
+  telling the operator to fill that file with real paths and possibly a GitHub
+  token. Matching by name means the next rename cannot reopen the hole.
+- **The declared SDK floor is actually exercised.** `mcp>=1.2` was advertised
+  and never once run: the smoke suite's import guard named a 2.x-only submodule,
+  so on 1.2 it errored during collection under `REQUIRE_MCP` and skipped
+  silently without it. The guard now probes the package, a separate test
+  re-asserts the namespace-shim hazard it was working around, and CI's transport
+  job runs the whole suite on both ends of the range. A supported version is one
+  CI runs.
+- **`scan_evidence.py` survives an absolute out-of-tree target.**
+  `Path.relative_to` raises for a path that is not under the repo, so pointing
+  the gate at a staging directory before exporting it — the one use that most
+  needs a gate — ended in a traceback rather than a scan.
+
 ### Fixed (final hardening scan)
 
 - **gitleaks panicked at config load and took CI red.** The custom rule used

@@ -15,10 +15,16 @@ SRC    := mcp_server/src
 # defined in exactly one place.
 RUN := PYTHONPATH=$(SRC) $(PY)
 
+# Every shell script the repo ships, discovered rather than listed. The list
+# used to be hard-coded in three places (here, CI, the hook) and a fourth
+# script would have been added to none of them.
+SHELL_SCRIPTS := $(shell ls .githooks/* 2>/dev/null) \
+                 $(wildcard scripts/*.sh) $(wildcard .claude/hooks/*.sh)
+
 .DEFAULT_GOAL := help
-.PHONY: help setup hooks baseline test regression lint typecheck scan validate \
-        coverage selfcheck serve probe probe-blocked promote verdict \
-        docker-test docker-transport docker-lint clean
+.PHONY: help setup hooks baseline test regression lint typecheck scan secrets \
+        validate coverage selfcheck serve probe probe-blocked promote verdict \
+        shellcheck docker-test docker-transport docker-lint clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -44,11 +50,15 @@ hooks: ## Install the git pre-commit gate (secret scan + gitleaks + lint)
 
 # ------------------------------------------------------- validation gauntlet
 
+# `$(PY) -m` rather than a bare `ruff`/`mypy`. PY already prefers .venv, but
+# these two targets went through PATH -- so on a fresh `make setup && make
+# validate` they either failed outright or silently linted with a system ruff
+# at a different version than the venv the rest of the gauntlet uses.
 lint: ## ruff over the whole repo
-	ruff check .
+	$(PY) -m ruff check .
 
 typecheck: ## mypy over mcp_server/src and scripts
-	mypy
+	$(PY) -m mypy
 
 test: ## The full suite (contract + smoke; smoke skips without the SDK)
 	$(PYTEST)
@@ -63,8 +73,24 @@ coverage: ## Run the suite under coverage and enforce the floor
 scan: ## Credential pass over evidence/ traces/ snippets/ configs/ decisions/
 	$(PY) scripts/scan_evidence.py
 
-validate: lint typecheck coverage scan ## Everything, in order, stopping at the first failure
-	@bash -n scripts/00-baseline.sh .githooks/pre-commit .claude/hooks/check-edited-file.sh
+secrets: scan ## The full credential gate: scan_evidence + gitleaks over history
+	@if command -v gitleaks >/dev/null 2>&1; then \
+	  gitleaks detect --config .gitleaks.toml --no-banner --redact; \
+	else \
+	  echo "gitleaks not installed -- CI's secrets job still runs it over full history."; \
+	  echo "  brew install gitleaks   |   https://github.com/gitleaks/gitleaks"; \
+	fi
+
+shellcheck: ## Every shell script parses (what CI's contract job asserts)
+	@bash -n $(SHELL_SCRIPTS) && echo "shell scripts parse: $(words $(SHELL_SCRIPTS)) file(s)"
+
+# The set below is exactly what CI asserts, in the same order:
+#   lint/typecheck -> quality job    coverage -> quality job's floor
+#   regression     -> transport job  secrets  -> secrets job
+# `regression` was the gap: `make validate` was green while CI's transport leg
+# was the only thing that had ever run the suite with the SDK required, so the
+# one failure mode the transport job exists to catch was undetectable locally.
+validate: lint typecheck coverage regression secrets shellcheck ## Everything CI checks, in order, stopping at the first failure
 	@echo
 	@echo "All checks passed. Safe to open a PR."
 

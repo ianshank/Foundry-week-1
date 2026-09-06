@@ -16,6 +16,7 @@ what this tool may execute should require a code change, a review and a test.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -64,7 +65,20 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
         "[REDACTED:jwt]",
     ),
-    (re.compile(r"(?i)\b(authorization|bearer)\s*[:=]\s*\S+"), r"\1: [REDACTED]"),
+    # Authorization headers. The value is optionally prefixed by a scheme, and
+    # the earlier form of this pattern consumed exactly one whitespace-delimited
+    # token after the separator -- which on the standard
+    # `Authorization: Bearer <token>` ate the word "Bearer" and left the
+    # credential itself in the evidence. It redacted the label and kept the
+    # secret. `(?:\S+[ \t]+)?` takes the scheme when one is present.
+    (re.compile(r"(?i)\b(authorization)\s*[:=]\s*(?:\S+[ \t]+)?\S+"), r"\1: [REDACTED]"),
+    # The same credential without a header around it. `verifier_probe` builds
+    # exactly this string for its outbound header, so a transcript could carry
+    # it with no `authorization:` prefix to match on. Anchored to the two real
+    # HTTP auth schemes and to a credential-shaped run of at least 8 characters,
+    # so ordinary prose ("bearer of bad news") is left alone -- a rule broad
+    # enough to redact evidence is its own failure.
+    (re.compile(r"(?i)\b(bearer|basic)[ \t]+([A-Za-z0-9._\-+/=]{8,})"), r"\1 [REDACTED]"),
     (
         re.compile(r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|APIKEY|API_KEY))\s*=\s*\S+"),
         r"\1=[REDACTED]",
@@ -226,6 +240,35 @@ def clean(text: str, limit: int) -> str:
     return tail(redact(text or ""), limit)
 
 
+def _reject_non_finite(token: str) -> Any:
+    """`json.loads` hook for the three constants JSON does not actually have."""
+    raise ValueError(
+        f"{token} is a Python extension, not JSON; it cannot be framed as JSON-RPC"
+    )
+
+
+def loads_strict(text: str) -> Any:
+    """`json.loads`, minus the non-standard floats Python accepts by default.
+
+    Python's decoder accepts bare ``NaN``, ``Infinity`` and ``-Infinity``, and
+    its encoder emits them back. JSON has no such literals, so a payload
+    carrying one parses here and then re-serialises into a frame the client
+    cannot read -- and on a stdio MCP server an unreadable frame is not a
+    visible error, it is the tool disappearing.
+
+    Refusing is the contract-correct answer rather than substituting `null`:
+    the value is evidence this wrapper cannot faithfully carry, and guessing
+    what the producer meant is the failure this package exists to prevent. The
+    caller downgrades the evidence and keeps the verdict, which comes from the
+    exit code and is unaffected.
+
+    Raises `ValueError` for both a malformed document and a non-finite float,
+    so callers need one handler rather than a list of `json` subclasses that
+    has already been wrong three times.
+    """
+    return json.loads(text, parse_constant=_reject_non_finite)
+
+
 def redact_structure(value: Any, max_depth: int) -> tuple[Any, bool]:
     """Redact every string inside a parsed JSON structure, keys included.
 
@@ -272,15 +315,20 @@ def redact_structure(value: Any, max_depth: int) -> tuple[Any, bool]:
             # path this function exists to defend. Allocation happens here,
             # eagerly, because assignment into `branch` is deferred until the
             # child is popped and a check at that point would race.
-            taken: set[Any] = set()
+            # A next-ordinal counter rather than a probing loop. The obvious
+            # `while candidate in taken: ordinal += 1` is quadratic when many
+            # keys collapse to the same marker, which is precisely the input
+            # this function is written to survive: 4000 credential-shaped keys
+            # inside the size budget took 905ms of pure probing. Remembering
+            # the next free ordinal per base makes it linear.
+            next_ordinal: dict[Any, int] = {}
             for child_key, child in node.items():
                 safe_key = redact(child_key) if isinstance(child_key, str) else child_key
-                if safe_key in taken:
-                    ordinal = 2
-                    while f"{safe_key}#{ordinal}" in taken:
-                        ordinal += 1
-                    safe_key = f"{safe_key}#{ordinal}"
-                taken.add(safe_key)
+                base_key = safe_key
+                ordinal = next_ordinal.get(base_key, 1)
+                if ordinal > 1:
+                    safe_key = f"{base_key}#{ordinal}"
+                next_ordinal[base_key] = ordinal + 1
                 stack.append((child, branch, safe_key, depth + 1))
         elif isinstance(node, list):
             if depth >= max_depth:

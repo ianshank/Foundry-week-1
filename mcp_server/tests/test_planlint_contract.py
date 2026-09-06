@@ -281,12 +281,13 @@ def test_an_oversized_payload_is_refused_without_changing_the_verdict(fake_planl
 
 def test_the_findings_limit_is_configuration_not_a_constant(fake_planlint, configured):
     """The same payload passes or is refused purely on the configured ceiling."""
-    generous = configured(
+    configured(
         fake_planlint(exit_code=1, stdout=FINDINGS_JSON),
         FOUNDRY_SPIKE_FINDINGS_MAX_BYTES=str(len(FINDINGS_JSON) + 1),
     )
-    assert generous  # the fixture returns the target it configured
-    assert lint_openspec()["findings_truncated"] is False
+    kept = lint_openspec()
+    assert kept["findings_truncated"] is False
+    assert kept["findings"] is not None
 
     configured(
         fake_planlint(exit_code=1, stdout=FINDINGS_JSON),
@@ -328,7 +329,8 @@ def test_redaction_preserves_the_structure_it_redacts(fake_planlint, configured)
     assert isinstance(result["findings"], dict)
     finding = result["findings"]["findings"][0]
     assert finding["rule"] == "R1"
-    assert "abc123" not in finding["message"] or "[REDACTED]" in finding["message"]
+    assert "abc123" not in finding["message"]
+    assert "[REDACTED]" in finding["message"]
 
 
 def test_nothing_truncated_reports_false_rather_than_null(fake_planlint, configured):
@@ -343,11 +345,12 @@ def test_nothing_truncated_reports_false_rather_than_null(fake_planlint, configu
 def test_an_injected_config_overrides_the_environment(fake_planlint, configured):
     """`config=` exists so in-process callers can vary settings without mutating
     os.environ, which is global and has bitten this repository once already."""
-    root = configured(fake_planlint(exit_code=1, stdout=FINDINGS_JSON))
+    configured(fake_planlint(exit_code=1, stdout=FINDINGS_JSON))
     injected = replace(load_planlint_config(), findings_max_bytes=1)
     assert lint_openspec(config=injected)["findings_truncated"] is True
+    # The environment was never touched to achieve that, so the very next call
+    # with no injected config still sees the configured ceiling.
     assert lint_openspec()["findings_truncated"] is False
-    assert root  # the environment was never changed to achieve the above
 
 
 # --------------------------------------------------------------------------

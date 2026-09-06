@@ -165,3 +165,61 @@ def test_missing_sdk_raises_an_actionable_message_not_a_bare_importerror(monkeyp
     with pytest.raises(RuntimeError) as caught:
         server_module._load_server_class()
     assert "pip install" in str(caught.value)
+
+
+
+def _unwrap(result: object) -> dict:
+    """Pull the tool's dict out of whatever the installed SDK major returns.
+
+    2.x returns `(content, structured)`; 1.x returns a content list. The test
+    is version-tolerant about the envelope and strict about what is inside it.
+    """
+    import json as _json
+
+    if isinstance(result, tuple):
+        for part in reversed(result):
+            if isinstance(part, dict):
+                return part.get("result", part)
+    blocks = result if isinstance(result, list) else getattr(result, "content", [])
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if text:
+            return _json.loads(text)
+    raise AssertionError(f"no dict payload in {result!r}")
+
+def test_the_registered_tool_actually_runs_when_the_protocol_calls_it(tmp_path, monkeypatch):
+    """Registering a tool and running one are different claims.
+
+    `list_tools` proves the wrappers were registered. Their bodies were never
+    executed by any in-process test, so the one line that matters -- the wrapper
+    delegating to the real implementation -- was covered only by the subprocess
+    E2E, whose coverage the parent process does not see. A wrapper that
+    registered and then returned the wrong thing would pass every other test in
+    this file.
+    """
+    target = tmp_path / "repo"
+    (target / "openspec").mkdir(parents=True)
+    monkeypatch.setenv("PLANLINT_TARGET", str(target))
+    monkeypatch.setenv("PLANLINT_ALLOWED_ROOTS", str(target))
+    monkeypatch.setenv("PLANLINT_BIN", "/nonexistent/planlint-for-this-test")
+
+    server = build_server()
+    result = asyncio.run(server.call_tool("lint_openspec", {}))
+
+    payload = _unwrap(result)
+    # The binary does not exist, so the honest answer is BLOCKED -- and the
+    # point is that it arrived as a verdict through the registered wrapper
+    # rather than as an exception out of it.
+    assert payload["verdict"] == "BLOCKED"
+    assert payload["blocked_reason"] == "tool_not_found"
+    assert payload["contract"]["authority"] == "exit_code"
+
+
+def test_the_scorer_wrapper_also_delegates(tmp_path, monkeypatch):
+    monkeypatch.setenv("EVAL_SINK_DIR", str(tmp_path))
+    monkeypatch.setenv("EVAL_ALLOWED_ROOTS", str(tmp_path))
+    server = build_server()
+    payload = _unwrap(asyncio.run(server.call_tool("score_run", {"run_id": "absent"})))
+    assert payload["verdict"] == "BLOCKED"
+    assert payload["blocked_reason"] == "artifact_missing"
+    assert payload["pass_rate"] is None

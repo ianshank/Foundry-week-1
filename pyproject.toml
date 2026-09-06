@@ -76,12 +76,12 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = true
 show_error_codes = true
 
-[[tool.mypy.overrides]]
-# The SDK is an optional dependency resolved at runtime by
-# `server._load_server_class`, so it may legitimately be absent when mypy runs.
-module = ["mcp.*"]
-ignore_missing_imports = true
-
+# No `[[tool.mypy.overrides]]` for `mcp.*`. There was one, and it emitted
+# "unused section" on every run: `server._load_server_class` resolves the SDK
+# through `importlib` string names, so mypy never sees an `mcp` import to
+# silence. A permanent warning that trains people to ignore warnings is worse
+# than the missing-stub error it was pre-empting. Restore it the day something
+# imports the SDK statically.
 
 [tool.coverage.run]
 source = ["mcp_server/src", "scripts"]
