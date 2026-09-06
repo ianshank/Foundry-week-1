@@ -94,7 +94,7 @@ show_missing = true
 # not blocked by a percentage point, and high enough that deleting a test file
 # fails the build. Coverage measures which lines ran, never whether the
 # assertion was worth making -- the contract tests are what do that.
-fail_under = 85
+fail_under = 90
 exclude_also = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",

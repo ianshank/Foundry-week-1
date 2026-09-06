@@ -112,8 +112,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install linters
-        run: python -m pip install --upgrade pip ruff mypy coverage pytest
+      - name: Install linters and the server
+        # The SDK is installed here on purpose. Without it `test_server_smoke`
+        # and `test_server_e2e_stdio` skip, `server.py` measures 0%, and the
+        # floor is computed over a codebase with a hole in exactly the file
+        # whose failure mode has already shipped once -- a server that could
+        # not import, under a green tick. A gate that cannot see the thing it
+        # is guarding is decoration.
+        run: |
+          python -m pip install --upgrade pip ruff mypy coverage pytest
+          python -m pip install -e "./mcp_server[dev]"
 
       - name: ruff
         run: ruff check --output-format=github .
@@ -123,8 +131,13 @@ jobs:
 
       - name: Coverage floor
         # Measured here rather than in `contract`, whose whole value is running
-        # with nothing installed. The floor stops 91% from rotting; it does not
-        # claim the tests are good, only that they still exist.
+        # with nothing installed.
+        #
+        # The floor is 90 against a real 95. Deliberately not 95: a floor set
+        # to the current number is a target, and the way people hit a target is
+        # by writing tests shaped like coverage rather than tests shaped like
+        # the contract. Five points is room to refactor without room to delete
+        # a test file unnoticed.
         run: |
           python -m coverage run -m pytest -q
           python -m coverage report
