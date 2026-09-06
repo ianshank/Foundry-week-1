@@ -55,16 +55,30 @@ def test_integration_planlint_and_scoring_pipeline(
     # the rest of this suite does and what `mcp_server/tests/conftest.py`
     # argues for: the failure modes here are properties of real process
     # handling, and a patched `subprocess` tests the patch.
-    stub = tmp_path / "bin" / "planlint"
-    stub.parent.mkdir(parents=True, exist_ok=True)
-    stub.write_text(
-        "#!/usr/bin/env python3\n"
+    # Create a cross-platform stub binary.
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir(parents=True, exist_ok=True)
+    stub_py = stub_dir / "planlint.py"
+    # Use sys.stdout.buffer for binary-safe output to avoid cp1252 on Windows.
+    stub_py.write_text(
         "import sys\n"
-        "sys.stdout.write('{\"findings\": []}')\n"
+        'sys.stdout.buffer.write(b\'{"findings": []}\')\n'
+        "sys.stdout.buffer.flush()\n"
         "sys.exit(0)\n",
         encoding="utf-8",
     )
-    stub.chmod(0o755)
+    if sys.platform == "win32":
+        stub = stub_dir / "planlint.bat"
+        stub.write_text(f'@"{sys.executable}" "{stub_py}" %*')
+    else:
+        import stat
+
+        stub = stub_dir / "planlint"
+        stub.write_text(
+            f"#!/usr/bin/env {sys.executable}\n" + stub_py.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     planlint_cfg = PlanlintConfig(
         binary=str(stub),
         target=str(proposal),
