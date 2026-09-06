@@ -1,4 +1,9 @@
-"""Isolation for the root suite, which had none.
+"""Path setup and isolation for the root suite.
+
+Two conftests were written for this directory independently -- one on main for
+import paths, one here for state isolation -- and the merge kept both jobs.
+
+Isolation, the half this branch added:
 
 `mcp_server/tests/conftest.py` clears the tool variables before each test so a
 developer's real `PLANLINT_TARGET` cannot leak in and make a guard test pass
@@ -29,8 +34,12 @@ from pathlib import Path
 
 import pytest
 
+# Repo root, `scripts/` and the package source, as main set up for the suites
+# that landed with PR #5 -- they import `probe.*` and the scripts directly.
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, os.fspath(_REPO_ROOT / "mcp_server" / "src"))
+for _path in (_REPO_ROOT, _REPO_ROOT / "scripts", _REPO_ROOT / "mcp_server" / "src"):
+    if os.fspath(_path) not in sys.path:
+        sys.path.insert(0, os.fspath(_path))
 
 
 def _configured_env_names() -> tuple[str, ...]:

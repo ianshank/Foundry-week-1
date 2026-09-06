@@ -23,9 +23,15 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "scripts"))
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+if str(REPO / "scripts") not in sys.path:
+    sys.path.insert(0, str(REPO / "scripts"))
 
-from scan_evidence import scan_file  # noqa: E402  (path set above)
+try:
+    from scripts.scan_evidence import scan_file
+except ImportError:
+    from scan_evidence import scan_file  # type: ignore[import-not-found,no-redef]
 
 TRACES = REPO / "traces"
 SKIP_NAMES = {"__pycache__", ".DS_Store"}
@@ -74,15 +80,26 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="a run directory under traces/raw/")
     parser.add_argument("--as", dest="name", default=None, help="name it differently in traces/")
+    parser.add_argument(
+        "--dest-root",
+        dest="dest_root",
+        type=Path,
+        default=None,
+        help="override destination root directory (defaults to traces/)",
+    )
     args = parser.parse_args(argv)
 
     try:
-        destination = promote(args.source, args.name)
+        destination = promote(args.source, args.name, destination_root=args.dest_root)
     except PromotionRefused as refusal:
         print(f"REFUSED: {refusal}", file=sys.stderr)
         return 1
 
-    print(f"promoted -> {destination.relative_to(REPO)}")
+    try:
+        display_path = str(destination.relative_to(REPO))
+    except ValueError:
+        display_path = str(destination)
+    print(f"promoted -> {display_path}")
     print("Cite this path from evidence/02-bakeoff.md; it is tracked, traces/raw/ is not.")
     return 0
 

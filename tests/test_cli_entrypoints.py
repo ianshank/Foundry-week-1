@@ -37,9 +37,9 @@ def fake_planlint(tmp_path: Path) -> Path:
     """A stand-in planlint: exit 2 with no openspec/ tree, 1 for a 'find'
     target, 0 otherwise. Mirrors the real three-way contract."""
     script = tmp_path / "bin" / "planlint"
-    script.parent.mkdir(parents=True)
-    script.write_text(
-        "#!/usr/bin/env python3\n"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    py_script = tmp_path / "bin" / "planlint.py"
+    py_script.write_text(
         "import json, os, sys\n"
         "target = sys.argv[sys.argv.index('--target') + 1]\n"
         "if not os.path.isdir(os.path.join(target, 'openspec')):\n"
@@ -51,6 +51,11 @@ def fake_planlint(tmp_path: Path) -> Path:
         "print(json.dumps({'findings': []})); sys.exit(0)\n",
         encoding="utf-8",
     )
+    if sys.platform == "win32":
+        bat_script = tmp_path / "bin" / "planlint.bat"
+        bat_script.write_text(f'@"{sys.executable}" "{py_script}" %*')
+        return bat_script
+    script.write_text(f"#!/usr/bin/env {sys.executable}\n" + py_script.read_text(), encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return script
 

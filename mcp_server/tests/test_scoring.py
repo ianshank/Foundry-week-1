@@ -82,16 +82,15 @@ def test_one_false_is_findings_even_among_nulls(sink):
     assert result["pass_rate"] == 0.0
 
 
-def test_nested_and_list_shapes_are_both_found(sink):
-    """The sink layout is pinned in session 3; until then, be shape-tolerant
-    rather than shape-guessing."""
+def test_pinned_schema_is_extracted(sink):
+    """The sink layout is pinned in session 3: must be 'results' array."""
     sink(
         "run-5",
-        {"cases": [{"name": "c1", "scorers": [{"name": "s1", "passed": True}]}, {"scorers": []}]},
+        {"results": [{"scorer": "s1", "passed": True}]}
     )
     result = score_run("run-5")
     assert [record["scorer"] for record in result["scorers"]] == ["s1"]
-    assert result["scorers"][0]["source_path"].startswith("$.cases[0].scorers[0]")
+    assert result["scorers"][0]["source_path"].startswith("$.results[0]")
 
 
 def test_unrecognised_schema_is_blocked_not_an_empty_pass(sink):
@@ -141,80 +140,39 @@ def test_unset_sink_is_blocked_not_a_keyerror(monkeypatch):
 def test_unreadable_verdict_value_is_not_guessed_into_a_boolean(sink):
     sink("run-10", {"results": [{"scorer": "weird", "passed": 0.73}]})
     result = score_run("run-10")
-    passed = result["scorers"][0]["passed"]
-    assert passed is not True and passed is not False and passed is not None
-    assert str(passed).startswith("unreadable:")
-    assert result["counts"]["unreadable"] == 1
-    assert result["pass_rate"] is None
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
+    assert result["ignored"][0]["why"] == "scorer record has a non-boolean, non-null verdict"
 
 
 # --------------------------------------------------------------------------
-# Regression: phantom scorers. `result` was in _PASSED_KEYS, so a top-level
-# summary field became a scorer with passed=True -- turning a null-only run
-# into PASS with pass_rate 1.0. The fabrication this module exists to prevent,
-# arriving through the shape-tolerant walk instead of through a coercion.
+# Regression: phantom scorers. A strict pinned schema prevents summary fields
+# from fabricating passes.
 # --------------------------------------------------------------------------
 
-
-def test_top_level_result_summary_does_not_fabricate_a_pass(sink):
-    sink(
-        "run-20",
-        {
-            "run_id": "run-20",
-            "result": "pass",
-            "scorers": [{"name": "trajectory_shape", "passed": None}],
-        },
-    )
+def test_missing_results_array_is_blocked(sink):
+    sink("run-20", {"run_id": "run-20", "result": "pass", "scorers": [{"name": "s", "passed": True}]})
     result = score_run("run-20")
-    assert [record["scorer"] for record in result["scorers"]] == ["trajectory_shape"]
-    assert result["pass_rate"] is None
     assert result["verdict"] == BLOCKED
-    assert result["blocked_reason"] == BLOCKED_NO_SCORED_RESULTS
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
 
-
-def test_unnamed_root_verdict_field_is_refused_and_recorded(sink):
-    """Refused, not silently dropped: session 3 pins the real schema, and a
-    field this wrapper declined to count is exactly what it needs to see."""
-    sink("run-21", {"passed": True, "cases": [{"name": "c", "passed": None}]})
+def test_unnamed_scorer_record_is_refused(sink):
+    sink("run-21", {"results": [{"passed": True}]})
     result = score_run("run-21")
-    assert [record["scorer"] for record in result["scorers"]] == ["c"]
-    assert len(result["ignored"]) == 1
-    assert result["ignored"][0]["source_path"] == "$"
     assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
+    assert len(result["ignored"]) == 1
+    assert result["ignored"][0]["why"] == "scorer record missing 'scorer' name key"
 
 
-def test_a_root_object_that_names_itself_is_still_a_scorer(sink):
-    """The root refusal keys on namelessness, not on being the root -- an
-    artifact that is one scorer record must not be thrown away."""
-    sink("run-22", {"scorer": "exit_code_fidelity", "passed": True})
+def test_malformed_result_blocks_even_when_another_result_passes(sink):
+    sink(
+        "run-22",
+        {"results": [{"scorer": "valid", "passed": True}, {"scorer": "invalid"}]},
+    )
     result = score_run("run-22")
-    assert [record["scorer"] for record in result["scorers"]] == ["exit_code_fidelity"]
-    assert result["verdict"] == PASS
-
-
-def test_scorers_are_named_from_their_key_when_the_record_has_no_name(sink):
-    sink("run-23", {"scorers": {"exit_fidelity": {"passed": True}, "refusal": {"passed": False}}})
-    result = score_run("run-23")
-    named = {record["scorer"]: record["named_by"] for record in result["scorers"]}
-    assert named == {"exit_fidelity": "path", "refusal": "path"}
-    assert result["verdict"] == FINDINGS
-
-
-def test_a_bare_array_of_unnamed_records_still_reports(sink):
-    """Positional naming: an unnameable *list element* does not exist, so the
-    refusal stays narrow to the one shape that caused the defect."""
-    sink("run-24", [{"passed": True}, {"passed": False}])
-    result = score_run("run-24")
-    assert [record["scorer"] for record in result["scorers"]] == ["[0]", "[1]"]
-    assert result["pass_rate"] == 0.5
-    assert result["ignored"] == []
-
-
-def test_explicit_name_wins_over_the_path(sink):
-    sink("run-25", {"scorers": {"slot_a": {"name": "exit_code_fidelity", "passed": True}}})
-    record = score_run("run-25")["scorers"][0]
-    assert record["scorer"] == "exit_code_fidelity"
-    assert record["named_by"] == "field"
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
 
 
 def test_null_never_appears_as_false_anywhere_in_the_payload(sink):
@@ -276,7 +234,7 @@ TOKEN = "ghp_" + "C" * 36
 
 
 def test_a_nul_byte_in_the_artifact_path_is_blocked_never_raised(sink):
-    sink("run", {"scorers": [{"name": "s", "passed": True}]})
+    sink("run", {"results": [{"scorer": "s", "passed": True}]})
     result = score_run("run", artifact_path=f"{sink.dir}/run\x00.json")
     assert result["verdict"] == BLOCKED
     assert result["blocked_reason"] == BLOCKED_GUARD_REJECTED
@@ -294,7 +252,7 @@ def test_a_credential_in_a_scorer_detail_is_redacted(sink):
     copied into a result the model reads and a trace an operator commits."""
     sink(
         "run",
-        {"scorers": [{"name": "exit_fidelity", "passed": False, "reason": f"used {TOKEN}"}]},
+        {"results": [{"scorer": "exit_fidelity", "passed": False, "reason": f"used {TOKEN}"}]},
     )
     result = score_run("run")
     assert result["verdict"] == FINDINGS
@@ -303,7 +261,7 @@ def test_a_credential_in_a_scorer_detail_is_redacted(sink):
 
 
 def test_a_credential_in_a_scorer_name_is_redacted(sink):
-    sink("run", {"scorers": [{"name": TOKEN, "passed": True}]})
+    sink("run", {"results": [{"scorer": TOKEN, "passed": True}]})
     result = score_run("run")
     assert TOKEN not in json.dumps(result)
 
@@ -311,7 +269,7 @@ def test_a_credential_in_a_scorer_name_is_redacted(sink):
 def test_a_non_string_detail_is_left_alone(sink):
     """Redaction applies to text. A structured detail is passed through rather
     than stringified, because guessing at its shape is how evidence gets lost."""
-    sink("run", {"scorers": [{"name": "s", "passed": True, "reason": {"code": 7}}]})
+    sink("run", {"results": [{"scorer": "s", "passed": True, "reason": {"code": 7}}]})
     assert score_run("run")["scorers"][0]["detail"] == {"code": 7}
 
 
@@ -321,36 +279,46 @@ def test_a_non_string_detail_is_left_alone(sink):
 
 
 @pytest.mark.parametrize(
-    ("written", "expected"),
-    [
-        ("true", True),
-        ("pass", True),
-        ("passed", True),
-        ("false", False),
-        ("fail", False),
-        ("failed", False),
-        ("null", None),
-        ("none", None),
-        ("skipped", None),
-        ("n/a", None),
-        ("  TRUE  ", True),
-    ],
+    "written", ["true", "pass", "passed", "false", "fail", "failed", "null", "skipped", "  TRUE  "]
 )
-def test_a_string_verdict_is_read_not_guessed(sink, written, expected):
-    sink("run", {"scorers": [{"name": "s", "passed": written}]})
-    assert score_run("run")["scorers"][0]["passed"] is expected
+def test_a_string_verdict_is_refused_rather_than_interpreted(sink, written):
+    """The pinned schema tightened this, and the tightening is right.
 
+    An earlier revision read `"true"` as `True`. That is an interpretation of
+    something the harness did not say in the type JSON has for saying it, and
+    this module's whole subject is not guessing. Only a real boolean or null
+    counts now; anything else is recorded in `ignored` with a reason and
+    excluded from the tally.
 
-def test_a_verdict_that_is_none_of_the_three_is_reported_unreadable_not_coerced(sink):
-    """0.73 is not a boolean and guessing which one it means is the defect this
-    whole module exists to avoid."""
-    sink("run", {"scorers": [{"name": "s", "passed": 0.73}]})
+    This test previously asserted the lenient reading. The contract changed by
+    a merged decision, so the test follows it -- and what it defends is
+    unchanged: a verdict is never invented from a value that is not one.
+    """
+    sink("run", {"results": [{"scorer": "s", "passed": written}]})
     result = score_run("run")
-    assert result["scorers"][0]["passed"] == "unreadable:0.73"
-    assert result["counts"]["unreadable"] == 1
-    # Unreadable is not scored, so nothing was scored, so this is BLOCKED.
+    assert result["scorers"] == []
+    assert len(result["ignored"]) == 1
+    assert "non-boolean" in result["ignored"][0]["why"]
     assert result["verdict"] == BLOCKED
-    assert result["blocked_reason"] == BLOCKED_NO_SCORED_RESULTS
+    assert result["pass_rate"] is None
+
+
+@pytest.mark.parametrize("written", [True, False, None])
+def test_a_real_json_verdict_is_read_exactly(sink, written):
+    """The other half: the three values the contract does recognise survive
+    unchanged, and `null` stays `null` rather than collapsing either way."""
+    sink("run", {"results": [{"scorer": "s", "passed": written}]})
+    assert score_run("run")["scorers"][0]["passed"] is written
+
+
+def test_a_verdict_that_is_none_of_the_three_is_refused_not_coerced(sink):
+    """0.73 is not a boolean, and guessing which one it means is the defect
+    this module exists to avoid. Under the pinned schema the record is refused
+    outright rather than reported with an `unreadable:` marker."""
+    sink("run", {"results": [{"scorer": "s", "passed": 0.73}]})
+    result = score_run("run")
+    assert result["scorers"] == []
+    assert result["verdict"] == BLOCKED
     assert result["pass_rate"] is None
 
 
@@ -358,8 +326,8 @@ def test_an_artifact_that_is_not_utf8_is_blocked_never_raised(sink):
     """UnicodeDecodeError subclasses ValueError as a *sibling* of
     JSONDecodeError, not a parent, so catching the latter missed it and the
     'never raises' contract did not hold."""
-    path = sink("run", {"scorers": []})
-    path.write_bytes(b'{"scorers": [{"name": "s", "passed": \xff\xfe true}]}')
+    path = sink("run", {"results": []})
+    path.write_bytes(b'{"results": [{"scorer": "s", "passed": \xff\xfe true}]}')
     result = score_run("run")
     assert result["verdict"] == BLOCKED
     assert result["blocked_reason"] == BLOCKED_ARTIFACT_UNREADABLE
@@ -369,7 +337,7 @@ def test_an_artifact_that_is_not_utf8_is_blocked_never_raised(sink):
 def test_an_unreadable_file_is_blocked_never_raised(sink, monkeypatch):
     """The filesystem is mocked here, not the module under test: this pins what
     `score_run` does when a read fails, which is the part that must not raise."""
-    sink("run", {"scorers": [{"name": "s", "passed": True}]})
+    sink("run", {"results": [{"scorer": "s", "passed": True}]})
 
     def explode(*_args, **_kwargs):
         raise PermissionError(13, "Permission denied")
@@ -396,7 +364,7 @@ def test_a_document_too_deep_to_read_is_blocked_never_an_empty_pass(sink):
     promises is the pair below: a refusal, and no exception. Both limits are
     now covered, one on each interpreter.
     """
-    path = sink("run", {"scorers": []})
+    path = sink("run", {"results": []})
     depth = 2_000
     path.write_text(
         '{"n": ' * depth + '{"name": "s", "passed": true}' + "}" * depth, encoding="utf-8"
@@ -416,8 +384,8 @@ def test_a_surrogate_in_an_artifact_does_not_cost_the_verdict(sink):
     verdict field -- the exact failure this package exists to prevent, one
     layer further out than the rule is usually applied.
     """
-    path = sink("run", {"scorers": []})
-    path.write_text('{"scorers":[{"name":"\\ud800","passed":true}]}', encoding="utf-8")
+    path = sink("run", {"results": []})
+    path.write_text('{"results":[{"scorer":"\\ud800","passed":true}]}', encoding="utf-8")
     result = score_run("run")
     assert result["verdict"] == PASS
     # The real assertion: the whole envelope survives an encode to the wire.
@@ -427,8 +395,8 @@ def test_a_surrogate_in_an_artifact_does_not_cost_the_verdict(sink):
 def test_a_surrogate_in_an_artifact_key_does_not_cost_the_verdict(sink):
     """`source_path` is assembled from artifact keys and is the one
     externally-derived field that does not flow through `redact`."""
-    path = sink("run", {"scorers": []})
-    path.write_text('{"\\ud800":{"name":"s","passed":true}}', encoding="utf-8")
+    path = sink("run", {"results": []})
+    path.write_text('{"results":[{"scorer":"\\ud800","passed":true}]}', encoding="utf-8")
     result = score_run("run")
     json.dumps(result, ensure_ascii=False).encode("utf-8")
 
@@ -437,8 +405,10 @@ def test_duplicate_verdict_keys_resolve_to_one_documented_answer(sink):
     """JSON permits duplicate keys and Python keeps the last. Pinned rather
     than left to be discovered: the surviving verdict is chosen by the parser,
     so the behaviour should at least be written down."""
-    path = sink("run", {"scorers": []})
-    path.write_text('{"name":"s","passed":true,"passed":null}', encoding="utf-8")
+    path = sink("run", {"results": []})
+    path.write_text(
+        '{"results":[{"scorer":"s","passed":true,"passed":null}]}', encoding="utf-8"
+    )
     result = score_run("run")
     assert result["scorers"][0]["passed"] is None
     assert result["verdict"] == BLOCKED

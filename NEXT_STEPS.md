@@ -16,20 +16,30 @@ done from here.
 
 ## Where this actually stands
 
-`main` is green and carries a well-tested three-valued contract — the artifact
-this week was supposed to produce a decision about. The decision itself exists
-only on an unmerged pull request, and it recommends spending money on a week 2
-while citing a self-check file whose own summary field reads
-`all_expected: false`.
+PR #5 has landed, so `main` now carries the probe decomposition, the layered
+test suites, the session tracker, a trace index, an MIT licence and the week's
+verdict. This branch carries the review that preceded it and the defect fixes
+that came out of that review.
 
-That is the whole situation. The scaffolding works. The paperwork does not yet
-support the recommendation it makes. Everything below is ordered by that.
+What the merge does **not** change is the evidence position, and it is worth
+being exact rather than gracious about it. `evidence/03-mcp-selfcheck.json` on
+`main` still reads `all_expected: false`; `evidence/02-bakeoff.md` — the path
+the decision record cites — still does not exist, only its template; and three
+of four model slots still have no data. The verdict is written. It is not yet
+supported by what is committed underneath it.
 
-**The good news is the size of the gap.** Turning an unsupportable "proceed"
-into a defensible verdict — in either direction — is roughly half a day of
-capture work, listed as Track C. It is the only work on this page the week
-actually asked for, and it is smaller than the pull request currently sitting
-in front of it.
+**The good news is the size of the gap.** Turning that into a defensible
+verdict — in either direction — is roughly half a day of capture work, listed
+as Track C. It is the only work on this page the week actually asked for.
+
+## Operator pre-work
+
+| # | Action | Why now |
+|---|---|---|
+| 1 | **Decide whether this repo stays public.** | It accumulates planlint findings with real spec paths, pasted OpenSpec proposals, MCTS node dumps and model transcripts — from source repos that are private. The licence question is now answered (MIT, landed with PR #5); this one is not. |
+| 2 | `cp .env.example .env` and fill it in | Nothing runs without `PLANLINT_TARGET` and an allow list. Both fail closed. |
+| 3 | `make setup && make test` | Confirms the floor works on your machine before a session is on the clock. |
+| 4 | `make hooks` | Installs the pre-commit secret gate. |
 
 ---
 
@@ -40,18 +50,33 @@ credential path.
 
 | # | Action | Why | Owner |
 |---|---|---|---|
-| A1 | **Done.** `.gitignore` now matches `mcp.json` at any depth | The rule named the pre-rename path, so the file the runbook tells you to fill with real paths and possibly a token was committable. Matched by name now, so the next rename cannot reopen it, with a test over three locations. | SWE |
-| A2 | **Still open, and not doable from a commit.** Set the repository default branch to `main` | It is still `claude/foundry-toolkit-spike-prep-d92qfh`, the stale prep branch that PR #1 was merged *from*. | SWE |
-| A3 | **Still open.** Then close dependabot PRs #2, #3, #4 | All three target that stale branch, because `dependabot.yml` sets no `target-branch` and inherits the default. Merging them changes nothing on `main`. Once A2 lands they regenerate against the right base. | SWE |
-| A4 | **Still open, and yours.** Decide LICENSE, or make the repository private | Public with no licence is all-rights-reserved: nobody may reuse it, including a future you. PR #5 proposes MIT. This is the owner's call and it gates everything else about publishing captures. | VP / owner |
+| A1 | **Done.** `.gitignore` matches `mcp.json` at any depth | The rule named the pre-rename path, so the file the runbook tells you to fill with real paths and possibly a token was committable. Matched by name now, so the next rename cannot reopen it, with a test over three locations. | SWE |
+| A2 | **Open, and not doable from a commit.** Set the repository default branch to `main` | It is still `claude/foundry-toolkit-spike-prep-d92qfh`, the stale prep branch that PR #1 was merged *from*. | owner |
+| A3 | **Open.** Then close dependabot PRs #2, #3, #4 | All three target that stale branch, because `dependabot.yml` sets no `target-branch` and inherits the default. Merging them changes nothing on `main`. Once A2 lands they regenerate against the right base. | SWE |
+| A4 | **Open.** Decide whether the repository stays public | The licence is settled; the visibility question is not, and it gates the capture work in Track C because that work commits transcripts derived from private repositories. | owner |
 
-A2 is the root cause of A3 and was already flagged in the previous revision of
-this file. It is still open, and it means every new pull request opened without
-an explicit base targets a branch nobody is developing on.
+A2 is the root cause of A3, and it costs more than tidiness: CodeRabbit only
+auto-reviews pull requests whose base is the repository default, so every PR
+targeting `main` currently goes unreviewed by it. It also means any pull
+request opened without an explicit base targets a branch nobody develops on.
 
-A4 is a decision, not a task. It has been open since the first review and it
-gates the capture work in Track C, because that work commits model transcripts
-derived from private repositories.
+## What PR #5 closed, and what it did not
+
+Credit where it is due, and precision where it matters. These landed and hold:
+the `verifier_probe.py` decomposition, `traces/index.md`, `session_tracker.md`,
+an MIT `LICENSE`, `promote_trace.py --dest-root`, and the layered test suites.
+
+These are recorded as fixed and are not:
+
+| Claim | State after the merge |
+|---|---|
+| "`evidence/05-verdict.md` was empty — **fixed**" | The file exists. Its exit-1 contract row still cites a self-check whose own `all_expected` is `false`, three of four model slots still have no data, and four agent probes are still marked passed without having been run. Written is not the same as supported. |
+| "coverage enforced with `--fail-under=80`" | The floor is 90 now, measured with the SDK installed so `server.py` is actually in the denominator. Under the old arrangement that file scored 0% and the gate could not see the one thing it exists to guard. |
+| "`evidence/02-bakeoff.md`" | Still absent; only `02-bakeoff.template.md` exists, and the decision record cites the former. |
+
+Everything else from the earlier findings list — the escaped `RecursionError`,
+the unstable envelope, the unreachable verbs, the namespace shadowing, the
+scanner gaps — is genuinely closed.
 
 ---
 

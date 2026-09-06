@@ -25,23 +25,61 @@ trap, and the one most likely to be papered over by a `or 0` somewhere.
 
 from __future__ import annotations
 
+import json
+import sys
+from pathlib import Path
 from typing import Any
 
-from . import guards
-from .config import CONFIG_ERROR_DETAIL_LIMIT, ConfigError, EvalConfig, load_eval_config
-from .logging_setup import get_logger, log_result
-from .verdicts import (
-    BLOCKED,
-    BLOCKED_ARTIFACT_MISSING,
-    BLOCKED_ARTIFACT_SCHEMA,
-    BLOCKED_ARTIFACT_UNREADABLE,
-    BLOCKED_CONFIG_ERROR,
-    BLOCKED_GUARD_REJECTED,
-    BLOCKED_NO_SCORED_RESULTS,
-    BLOCKED_NOTE,
-    FINDINGS,
-    PASS,
-)
+# The dual-import fallback arrived with the probe decomposition on main and is
+# kept as landed: `tests/integration/` drives this module with its own sys.path
+# setup and relies on it. The two names this branch added are threaded through
+# both arms, so the fallback cannot silently import a different surface from
+# the primary path.
+try:
+    from . import guards
+    from .config import (
+        CONFIG_ERROR_DETAIL_LIMIT,
+        ConfigError,
+        EvalConfig,
+        load_eval_config,
+    )
+    from .logging_setup import get_logger, log_result
+    from .verdicts import (
+        BLOCKED,
+        BLOCKED_ARTIFACT_MISSING,
+        BLOCKED_ARTIFACT_SCHEMA,
+        BLOCKED_ARTIFACT_UNREADABLE,
+        BLOCKED_CONFIG_ERROR,
+        BLOCKED_GUARD_REJECTED,
+        BLOCKED_NO_SCORED_RESULTS,
+        BLOCKED_NOTE,
+        FINDINGS,
+        PASS,
+    )
+except (ImportError, ValueError):
+    _src = str(Path(__file__).resolve().parents[1])
+    if _src not in sys.path:
+        sys.path.insert(0, _src)
+    from foundry_spike_mcp import guards
+    from foundry_spike_mcp.config import (
+        CONFIG_ERROR_DETAIL_LIMIT,
+        ConfigError,
+        EvalConfig,
+        load_eval_config,
+    )
+    from foundry_spike_mcp.logging_setup import get_logger, log_result
+    from foundry_spike_mcp.verdicts import (
+        BLOCKED,
+        BLOCKED_ARTIFACT_MISSING,
+        BLOCKED_ARTIFACT_SCHEMA,
+        BLOCKED_ARTIFACT_UNREADABLE,
+        BLOCKED_CONFIG_ERROR,
+        BLOCKED_GUARD_REJECTED,
+        BLOCKED_NO_SCORED_RESULTS,
+        BLOCKED_NOTE,
+        FINDINGS,
+        PASS,
+    )
 
 #: Keys that may hold a scorer's name, in preference order.
 _NAME_KEYS = ("scorer", "scorer_name", "name", "scorer_id", "id")
@@ -142,96 +180,98 @@ def _normalise_passed(value: Any) -> bool | None | str:
         return None
     if isinstance(value, bool):
         return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "pass", "passed"}:
-            return True
-        if lowered in {"false", "fail", "failed"}:
-            return False
-        if lowered in {"null", "none", "skipped", "n/a", ""}:
-            return None
     return f"unreadable:{value!r}"
 
 
 def _collect_scorers(
     node: Any,
-    path: str = "$",
-    label: str | None = None,
     out: list[dict[str, Any]] | None = None,
     ignored: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Walk the artifact for objects that carry a scorer verdict.
+    """Extract scorers explicitly from the pinned sink artifact shape.
 
-    Shape-agnostic on purpose: the exact `json_file` sink layout is pinned in
-    session 3 against a real artifact, and an adapter written from a guess
-    would silently mis-read a shape it half-matched. This finds any object with
-    a recognised verdict key and records where it was found, so a wrong guess
-    shows up as an odd `source_path` in the output rather than as a wrong
-    number.
-
-    Two rules keep tolerance from becoming invention:
-
-    * A verdict-carrying object must be *nameable* -- either an explicit name
-      key, or the key it hangs off (``$.scorers.exit_fidelity`` -> the scorer
-      ``exit_fidelity``). An object that is nameable by neither is a summary
-      field wearing a scorer's clothes.
-    * The document root is only a scorer when it names itself. Otherwise a
-      top-level verdict field would be counted alongside the real scorers,
-      which is how a null-only run turned into a pass.
-
-    Returns ``(scorers, ignored)``. Refusals are returned rather than dropped:
-    a scorer this wrapper declined to count is exactly the thing session 3
-    needs to see while pinning the real schema.
+    Session 3 pin: the artifact MUST be a dict with a 'results' key containing
+    a list of scorer objects. Each scorer object MUST have 'scorer' and 'passed'
+    keys. The shape-tolerant recursive walk has been removed.
     """
     if out is None:
         out = []
     if ignored is None:
         ignored = []
-    if isinstance(node, dict):
-        verdict_key = next((key for key in _PASSED_KEYS if key in node), None)
-        if verdict_key is not None:
-            explicit = next(
-                (str(node[key]) for key in _NAME_KEYS if key in node and node[key] is not None),
-                None,
-            )
-            name = explicit or label
-            if name is None:
-                ignored.append(
-                    {
-                        "source_path": guards.wire_safe(path),
-                        "verdict_key": verdict_key,
-                        "why": (
-                            "an unnamed verdict field at the document root is a summary, "
-                            "not a scorer; counting it would fabricate a result"
-                        ),
-                    }
-                )
-            else:
-                # Redacted on the way out. The scorer name and its detail come
-                # straight from a file this wrapper did not write, and both are
-                # copied into a result the model reads and a trace an operator
-                # commits. Same gap as `planlint`'s parsed payload, one module
-                # over: text that arrived already structured skipped the
-                # redaction that only ever ran on raw strings.
-                detail = node.get("reason") or node.get("message") or node.get("detail")
-                out.append(
-                    {
-                        "scorer": guards.redact(name),
-                        "passed": _normalise_passed(node[verdict_key]),
-                        "source_path": guards.wire_safe(path),
-                        "named_by": "field" if explicit else "path",
-                        "detail": guards.redact(detail) if isinstance(detail, str) else detail,
-                    }
-                )
-        for key, value in node.items():
-            _collect_scorers(value, f"{path}.{key}", key, out, ignored)
-    elif isinstance(node, list):
-        for index, value in enumerate(node):
-            # A list element is always nameable by position, so a bare array of
-            # unnamed records still reports. The one thing that stays refused is
-            # an unnamed verdict field on the root object -- the actual defect.
-            child_label = f"{label}[{index}]" if label else f"[{index}]"
-            _collect_scorers(value, f"{path}[{index}]", child_label, out, ignored)
+
+    # The pinned schema, as landed on main. This branch's review argued for
+    # holding the pin until a real sink artifact existed; that argument lost
+    # and the pin is the contract now, so what follows keeps it exactly and
+    # adds only the redaction this branch was carrying.
+    #
+    # `source_path` no longer needs `wire_safe`: every value here is generated
+    # by this function (`$.results[i]`) rather than taken from an artifact key,
+    # so it cannot carry a lone surrogate. `scorer` and `detail` still can --
+    # they come straight from a file this wrapper did not write, into a result
+    # the model reads and a trace an operator commits.
+    if not isinstance(node, dict) or "results" not in node:
+        ignored.append({
+            "source_path": "$",
+            "verdict_key": None,
+            "why": "artifact does not match the pinned schema (missing 'results' key at root)",
+        })
+        return out, ignored
+
+    results = node.get("results")
+    if not isinstance(results, list):
+        ignored.append({
+            "source_path": "$.results",
+            "verdict_key": None,
+            "why": "'results' is not a list",
+        })
+        return out, ignored
+
+    for index, item in enumerate(results):
+        source_path = f"$.results[{index}]"
+        if not isinstance(item, dict):
+            ignored.append({
+                "source_path": source_path,
+                "verdict_key": None,
+                "why": "scorer record is not an object",
+            })
+            continue
+
+        verdict_key = next((key for key in _PASSED_KEYS if key in item), None)
+        if verdict_key is None:
+            ignored.append({
+                "source_path": source_path,
+                "verdict_key": None,
+                "why": "scorer record missing 'passed' verdict key",
+            })
+            continue
+
+        name = next(
+            (str(item[key]) for key in _NAME_KEYS if key in item and item[key] is not None), None
+        )
+        if name is None:
+            ignored.append({
+                "source_path": source_path,
+                "verdict_key": verdict_key,
+                "why": "scorer record missing 'scorer' name key",
+            })
+        else:
+            passed = _normalise_passed(item[verdict_key])
+            if isinstance(passed, str):
+                ignored.append({
+                    "source_path": source_path,
+                    "verdict_key": verdict_key,
+                    "why": "scorer record has a non-boolean, non-null verdict",
+                })
+                continue
+            detail = item.get("reason") or item.get("message") or item.get("detail")
+            out.append({
+                "scorer": guards.redact(name),
+                "passed": passed,
+                "source_path": source_path,
+                "named_by": "field",
+                "detail": guards.redact(detail) if isinstance(detail, str) else detail,
+            })
+
     return out, ignored
 
 
@@ -369,6 +409,15 @@ def score_run(
             run_id=run_id,
             artifact=str(resolved),
         )
+    if ignored:
+        return _blocked(
+            BLOCKED_ARTIFACT_SCHEMA,
+            f"artifact has {len(ignored)} invalid scorer record(s)",
+            run_id=run_id,
+            artifact=str(resolved),
+            scorers=scorers,
+            ignored=ignored,
+        )
     if not scorers:
         detail = (
             "no object in the artifact carried a recognised verdict key "
@@ -414,3 +463,13 @@ def score_run(
     )
     log_result(_log, "score_run", result)
     return result
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Score an eval-harness run artifact.")
+    parser.add_argument("run_id", help="The eval run ID to score")
+    parser.add_argument("--artifact-path", default=None, help="Explicit path to sink artifact JSON")
+    args = parser.parse_args()
+    print(json.dumps(score_run(args.run_id, artifact_path=args.artifact_path), indent=2), file=sys.stdout)

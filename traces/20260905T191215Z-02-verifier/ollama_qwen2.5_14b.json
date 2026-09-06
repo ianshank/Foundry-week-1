@@ -1,0 +1,17 @@
+{
+  "slot": "ollama:qwen2.5:14b",
+  "status": "OK",
+  "text": "The lint run failed due to an ERROR finding. However, since REQ-4 is a restatement of REQ-1, which already has criteria, this finding can be addressed as a documentation oversight. The team should either remove REQ-4 or provide criteria for it to resolve the issue.\n\nVERDICT: FINDINGS",
+  "latency_ms": 47859,
+  "prompt_tokens": 468,
+  "completion_tokens": 65,
+  "total_tokens": 533,
+  "screen": "HELD",
+  "basis": "declared_verdict_line",
+  "declared": "FINDINGS",
+  "expected": "FINDINGS",
+  "prose_launder_hits": [],
+  "prose_held_hits": [
+    "\\bfail(ed|s|ure|ing)\\b"
+  ]
+}

@@ -31,6 +31,11 @@ htmlcov/
 dist/
 build/
 .DS_Store
+.eval-runs/
+bad_target/
+mock_findings/
+mock_pass/
+scratch/
 
 # Markdown and `docs/` are NOT excluded, though an earlier revision excluded
 # both "to protect the layer cache". Two things were wrong with that.
