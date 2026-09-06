@@ -72,26 +72,36 @@ Corrections required before it lands:
 
 **B2 — The scoring contract change (hold).** `scoring.py` now requires a root
 `results` list and blocks the entire run if any single record is malformed.
-Seven contract tests were deleted to match. `NEXT_STEPS.md` on `main` made
-pinning conditional on seeing a real sink artifact, and none exists — the demo
-eval aborts before writing one, because the harness refuses to gate on a judge
-with no calibration artifact.
+Seven contract tests were deleted to match. The previous revision of this file
+made pinning conditional on seeing a real sink artifact, and none exists — the
+demo eval aborts before writing one, because the harness refuses to gate on a
+judge with no calibration artifact.
 
 Pinning a guessed schema converts "we read something odd, here is what we found"
-into "refused, no data." Hold this until Track C produces an artifact, then land
-it with a `decisions/0002` entry recording the pinned shape. The contract-guard
-skill names changing contract tests without a decision record as the one thing
-not to do.
+into "refused, no data." Hold this until Track C0 produces an artifact, then
+land it with a `decisions/0002` entry recording the pinned shape.
+
+The strongest reason to hold is one of the deleted tests:
+`test_top_level_result_summary_does_not_fabricate_a_pass`. That is the
+regression test for a real bug in this repository's history, where a top-level
+summary field was counted as a scorer and a run that should have been BLOCKED
+returned `PASS` with `pass_rate: 1.0`. Deleting the regression test for a
+fabricated pass, in a repository whose subject is fabricated passes, is a
+bigger problem than the missing decision record.
 
 **B3 — Scaffolding (trim hard, or drop).** The probe decomposition is defensible
 on its own merits. The seven new test directories are not: about a third of the
-new tests exercise new behaviour, and the rest assert that Python is at least
-3.10, that the README is non-empty, that functions are callable, or re-run cases
-already covered. If this lands at all: delete the sanity layer, fold the
-non-duplicate cases into the existing files, restore the coverage floor to 85
-(CI currently overrides `pyproject.toml` with `--fail-under=80` on the command
-line), drop the UTF-16 `requirements.txt`, and reconcile every published test
-count to one measured number.
+90 net-new tests exercise new behaviour, and the rest assert that Python is at
+least 3.10, that files exist, that functions are callable, or re-parametrise
+cases already covered in `test_guards.py`.
+
+If this lands at all: delete the sanity layer, fold the non-duplicate cases into
+the existing files, restore the coverage floor to 85 (both the Makefile and CI
+now pass `--fail-under=80`, overriding `pyproject.toml`), drop the UTF-16
+`requirements.txt`, reconcile every published test count to one measured number
+with its environment stated, and remove the `sys.path` mutation that `scoring.py`
+now performs on itself in an import fallback — a tool module should not repair
+its own import path, and that fallback also swallows `ConfigError`.
 
 ---
 
@@ -99,7 +109,8 @@ count to one measured number.
 
 **This is the week's actual work: roughly half a day.** Nothing else on this
 page substitutes for it. C4 needs VS Code and Agent Builder in front of a human,
-so it does not compress the way the others do.
+so it does not compress the way the others do, and 45 minutes for it is
+optimistic — the runbook treats those probes as most of a session.
 
 | # | Action | Effort | Owner |
 |---|---|---|---|
@@ -107,8 +118,9 @@ so it does not compress the way the others do.
 | C1 | Build a target that genuinely produces findings at or above the threshold, and re-run `make selfcheck` until `all_expected` is `true` | 30 min | SWE |
 | C2 | Run the exit-2 fixture against at least one model and promote the trace | 20 min | SWE |
 | C3 | Run `make probe` across a second and third slot so the verifier row has more than one model in it | 30 min | SWE |
-| C4 | Run the four agent probes and save the conversations, including one BLOCKED or refused call | 45 min | SWE |
-| C5 | Rewrite the verdict against what C1–C4 actually produced | 45 min | VP / owner |
+| C4 | Run the four agent probes and save the conversations, including one BLOCKED or refused call | 45 min, optimistic | SWE |
+| C5 | Export the adapter snippet into `snippets/`, unmerged | 15 min | SWE |
+| C6 | Rewrite the verdict against what C0–C5 actually produced | 45 min | VP / owner |
 
 C1 is the one that matters most. Exit 1 is the only leg of the three-valued
 contract never demonstrated end to end against the real binary, and it is the
@@ -130,7 +142,7 @@ probe, the comparative claim is unsupported.* The runbook counts stopping on a
 stop condition as a success. What is not available is "proceed, spend the money"
 on one model, one prompt, one run.
 
-Note for C5: the decision record's fourth criterion — that the Playground gives
+Note for C6: the decision record's fourth criterion — that the Playground gives
 a faster read than the existing bench — has no field anywhere in the verdict
 template, and no evidence. Either add the field and answer it, or record it as
 unanswered. It is the criterion the decision record itself flags as most likely
@@ -146,23 +158,29 @@ and all of them sit on code that would carry into a hosted week 2.
 | # | Defect | Fix | Effort |
 |---|---|---|---|
 | D1 | A NUL byte in a model-supplied path escapes `lint_openspec` and `score_run` as `ValueError`, so the model sees a protocol error with no verdict field | Catch `ValueError` in `guards.check_target`, map to `BLOCKED / guard_rejected: invalid_path` | 30 min |
-| D2 | `make selfcheck` cannot pass in the configuration `.env.example` documents: with `PLANLINT_ALLOWED_ROOTS` unset it replaces the target fallback with the scratch directory | Stop mutating `os.environ`; append the scratch directory to a config object and pass it through `run_verb(config=)` | 45 min |
-| D3 | A findings payload that parses as valid JSON is neither truncated nor redacted; both controls live in the unparsable branch only | Bound and redact the parsed payload; set a `findings_truncated` flag | 30 min |
-| D4 | `scripts/scan_evidence.py` on a path outside the repository ends in a traceback | Handle the out-of-tree case | 20 min |
+| D2 | A findings payload that parses as valid JSON is neither truncated nor redacted; both controls live in the unparsable branch only | Bound and redact the parsed payload; set a `findings_truncated` flag | 30 min |
+| D3 | `scripts/scan_evidence.py` on an absolute path outside the repository ends in a traceback | Handle the out-of-tree case | 20 min |
 
 D1 is the only true contract breach on the list: it is the single place where
 *an exception is not a verdict* does not hold.
 
-D3 is more than a size problem. With the limit set to 100 bytes a valid payload
+D2 is more than a size problem. With the limit set to 100 bytes a valid payload
 came back at 4.5 MB, and because `guards.redact` runs in the same branch as the
 truncation, a credential inside valid JSON output reaches the model and any
 trace built from it unscrubbed. `SECURITY.md` lists that surface as controlled.
 It is controlled only on the unparsable path.
 
-D2 is currently recorded as an open finding describing the tool **widening** its
-own guard. It narrows it. In the documented default configuration the step-3
-self-check cannot pass at all, which is worth knowing before session 3 rather
-than during it.
+D3 is a cosmetic fix, not a hole in the gate. Paths are joined against the
+repository root, so only an absolute out-of-tree argument reaches the crash, and
+it exits non-zero either way.
+
+**Not on this list, because PR #5 already fixes it:** the self-check's handling
+of an unset `PLANLINT_ALLOWED_ROOTS`. On `main` it replaces the target fallback
+with its scratch directory, so the step-3 self-check cannot pass when the
+variable is left unset. The branch fixes it with `dataclasses.replace` and an
+injected config, which is the right shape. A previous draft of this plan
+scheduled 45 minutes to redo work already done; that was wrong, and it is
+another reason to land Track B1 promptly.
 
 Two more, cheap:
 
@@ -171,8 +189,9 @@ Two more, cheap:
   plausible environment variables and asserts the refusals are unchanged, plus a
   static check that `guards.py` imports no `os`, is about ten lines. *(SQE, 20
   min.)*
-- **D6 — Add `coverage` to the `[dev]` extras.** `make validate` is red
-  immediately after `make setup` on a fresh clone; CI installs it separately,
+- **D6 — Add `coverage`, `ruff` and `mypy` to the `[dev]` extras.** The extras
+  list is just `pytest`, so `make validate` is red immediately after `make
+  setup` on a fresh clone, on three counts. CI installs all three separately,
   which is how this survived. *(SWE, 5 min.)*
 - **D7 — Reconcile the declared SDK floor with what is tested.** `mcp>=1.2` is
   advertised, but the smoke suite resolves a 2.x module path at import time, so
@@ -245,10 +264,10 @@ Replaces the previous table, which recorded several items as fixed that are not.
 
 | Finding | State |
 |---|---|
-| `_selfcheck` and `PLANLINT_ALLOWED_ROOTS` | **Open, and mis-described.** It narrows, not widens; see D2 |
+| `_selfcheck` and `PLANLINT_ALLOWED_ROOTS` | **Fixed on PR #5**, open on `main`. Also mis-described: it narrows the guard, it does not widen it |
 | `traces/` has no index | **Fixed on PR #5**, not on `main` |
 | No session tracker | **Fixed on PR #5**, not on `main` |
-| Evidence cites gitignored paths | **Open.** `evidence/02-bakeoff.template.md` still points at `traces/raw/`, the exact defect recorded as fixed under finding #10 |
+| Evidence cites gitignored paths | **Drift, not a risk.** The template points at `traces/raw/`, which is gitignored by design; the runbook says to promote captures out of it before citing them |
 | `mcp.json` is gitignored | **False, and a live risk.** See A1 |
 | `make scan` reaches `snippets/` | **Fixed in code, stale in `snippets/README.md`**, which still says the opposite |
 | NUL byte escapes as an exception | **Open.** See D1 |
