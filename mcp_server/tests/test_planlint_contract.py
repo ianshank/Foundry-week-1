@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from dataclasses import replace
 
@@ -547,27 +548,81 @@ def test_a_timeout_reaps_the_whole_process_tree(tmp_path, configured, fake_planl
 
     The grandchild is given a distinctive name so the assertion cannot match
     this test's own process or the harness's.
+
+    Two things made an earlier version of this test pass without testing
+    anything, and both are guarded against below.
+
+    It named the grandchild with `sh -c 'exec -a MARKER sleep 45'`. `exec -a`
+    is a bashism; `/bin/sh` here and on the CI runner is dash, whose `exec`
+    rejects it -- so the grandchild exited 127 immediately and was never
+    created. The closing "nothing leaked" assertion was then trivially true,
+    and the process-group reaping it claims to verify never ran at all.
+
+    It also counted `ps -eo comm`, which reports the executable name rather
+    than argv[0], so even where `exec -a` works the marker would not appear
+    there. The grandchild is now a file *named* for the marker, which both
+    `comm` and `args` show honestly, and the count reads `args` because Linux
+    truncates `comm` to 15 characters.
+
+    The structural fix is the `peak` assertion: the test now proves the
+    grandchild existed before it proves it was reaped. A fixture that fails to
+    start one fails the test instead of passing it.
     """
     if not hasattr(os, "killpg"):  # pragma: no cover - Windows
         pytest.skip("process groups are POSIX-only")
 
     marker = "ZZ_FOUNDRY_GRANDCHILD_ZZ"
+    # Named, not renamed: no `exec -a`, and the shell stays alive as the
+    # process holding the marker (an `exec sleep` here would replace it and
+    # take the name back out of the listing).
+    grandchild = tmp_path / "bin" / marker
+    grandchild.parent.mkdir(parents=True, exist_ok=True)
+    grandchild.write_text("#!/bin/sh\nsleep 45\n", encoding="utf-8")
+    grandchild.chmod(0o755)
+
     script = tmp_path / "bin" / "planlint-tree"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(
-        f"#!/bin/sh\nsh -c 'exec -a {marker} sleep 45' &\nsleep 45\n", encoding="utf-8"
-    )
+    script.write_text(f"#!/bin/sh\n{grandchild} &\nsleep 45\n", encoding="utf-8")
     script.chmod(0o755)
 
     def _alive() -> int:
-        listing = subprocess.run(["ps", "-eo", "comm"], capture_output=True, text=True, check=False)
-        return sum(1 for line in listing.stdout.splitlines() if line.strip() == marker)
+        # `-ww`, because `ps` truncates the command column to the terminal
+        # width (80 when there is no tty) and the marker is the *last* path
+        # component. Under pytest's real tmp path that cut lands mid-marker, so
+        # a running grandchild counted as zero -- the same silent false-negative
+        # this test was rewritten to eliminate, arriving by a different route.
+        listing = subprocess.run(
+            ["ps", "-eww", "-o", "args"], capture_output=True, text=True, check=False
+        )
+        return sum(1 for line in listing.stdout.splitlines() if marker in line)
 
     assert _alive() == 0, "a previous run leaked; the assertion below would be meaningless"
-    configured(fake_planlint(exit_code=0), PLANLINT_TIMEOUT="1")
-    result = lint_openspec(config=replace(load_planlint_config(), binary=str(script)))
+
+    # Watch across the call: after it returns the grandchild should be gone,
+    # so "was there ever one?" cannot be answered from the outside afterwards.
+    peak = 0
+    watching = True
+
+    def _watch() -> None:
+        nonlocal peak
+        while watching:
+            peak = max(peak, _alive())
+            time.sleep(0.05)
+
+    watcher = threading.Thread(target=_watch, daemon=True)
+    watcher.start()
+    try:
+        configured(fake_planlint(exit_code=0), PLANLINT_TIMEOUT="1")
+        result = lint_openspec(config=replace(load_planlint_config(), binary=str(script)))
+    finally:
+        watching = False
+        watcher.join(timeout=5)
+
     assert result["verdict"] == BLOCKED
     assert result["blocked_reason"] == BLOCKED_TIMEOUT
+    assert peak >= 1, (
+        "no grandchild was ever running, so the reaping assertion below proves "
+        "nothing -- the fixture failed to start one"
+    )
 
     deadline = time.monotonic() + 10
     while _alive() and time.monotonic() < deadline:
