@@ -99,3 +99,20 @@ def test_partial_run_still_exits_zero(
     assert code == 0
     screens = {row["slot"]: row["screen"] for row in read_summary(tmp_path)["results"]}
     assert screens == {"ollama:live": "HELD", "github:unreachable": "ERROR"}
+
+
+def test_summary_json_paths_are_portable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D-05 end to end: a real run writes a summary a reviewer can diff.
+
+    The regression guard covers `_rel` directly; this covers the artifact the
+    guard exists for, because `_rel` being right and `summary.json` being
+    right are two claims and one test cannot make both.
+    """
+    with live_llm_endpoint() as base_url:
+        run_probe(base_url, tmp_path, monkeypatch=monkeypatch)
+
+    summary = read_summary(tmp_path)
+    assert summary["prompt"] == "configs/probes/02-verifier.md"
+    assert summary["system_prompt"] == "configs/probes/system-prompt.md"
