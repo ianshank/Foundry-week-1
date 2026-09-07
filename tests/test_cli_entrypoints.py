@@ -224,7 +224,7 @@ def test_probe_main_writes_transcripts_and_a_summary_even_when_calls_fail(
         ]
     )
     capsys.readouterr()
-    assert code == 0, "an ERROR row is not a laundered failure, so the exit code stays 0"
+    assert code == 2, "the only row is ERROR, so no model was ever reached"
     summaries = list(out.rglob("summary.json"))
     assert len(summaries) == 1
     summary = json.loads(summaries[0].read_text())

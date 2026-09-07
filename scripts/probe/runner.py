@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .client import call_model
@@ -14,11 +14,20 @@ from .screen import ERROR, screen
 
 
 def _rel(path: Path) -> str:
-    """Repo-relative when possible, absolute otherwise."""
+    """Repo-relative when possible, absolute otherwise -- always POSIX-separated.
+
+    `str(Path)` is platform-native, so this used to write
+    `configs\\probes\\02-verifier.md` on Windows and
+    `configs/probes/02-verifier.md` on Linux for the same run. `summary.json`
+    is tracked evidence; two captures of one run must not differ by separator.
+    A Windows drive letter survives in the absolute branch, which is right --
+    an absolute path off this machine is not portable and should not pretend.
+    """
+    resolved = path.resolve()
     try:
-        return str(path.resolve().relative_to(REPO))
+        return PurePosixPath(resolved.relative_to(REPO)).as_posix()
     except ValueError:
-        return str(path.resolve())
+        return resolved.as_posix()
 
 
 def run_probe_cells(

@@ -105,7 +105,7 @@ def _end_process_tree(process: subprocess.Popen[str]) -> None:
     """
     try:
         if _CAN_KILL_GROUPS:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)  # type: ignore[attr-defined]  # POSIX-only; guarded by _CAN_KILL_GROUPS
         else:  # pragma: no cover - Windows
             process.kill()
     except (ProcessLookupError, PermissionError, OSError):

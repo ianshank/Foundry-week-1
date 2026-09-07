@@ -18,6 +18,7 @@ derived from private source repos.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -41,7 +42,33 @@ class PromotionRefused(RuntimeError):
     """The capture was not promoted, and the message says why."""
 
 
-def promote(source: Path, name: str | None = None, destination_root: Path | None = None) -> Path:
+def _no_model_answered(source: Path) -> bool:
+    """True when `summary.json` exists and says every slot errored.
+
+    Absent, unreadable or unrecognised `summary.json` returns False: manual
+    exports are a supported input and this gate must not refuse a capture it
+    simply does not understand. It refuses only what it can positively read as
+    a run in which nothing was contacted.
+    """
+    summary_path = source / "summary.json"
+    if not summary_path.is_file():
+        return False
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return False
+    rows = summary.get("results") if isinstance(summary, dict) else None
+    if not isinstance(rows, list) or not rows:
+        return False
+    return all(isinstance(row, dict) and row.get("status") == "ERROR" for row in rows)
+
+
+def promote(
+    source: Path,
+    name: str | None = None,
+    destination_root: Path | None = None,
+    allow_error_run: bool = False,
+) -> Path:
     """Copy `source` into the tracked traces directory after a clean scan.
 
     Returns the destination path. Raises `PromotionRefused` rather than
@@ -57,6 +84,14 @@ def promote(source: Path, name: str | None = None, destination_root: Path | None
         raise PromotionRefused(
             f"{destination} already exists; pass --as <name> or remove it first. "
             "Overwriting a promoted trace would silently rewrite evidence."
+        )
+
+    if not allow_error_run and _no_model_answered(source):
+        raise PromotionRefused(
+            f"{source} records a run in which no model answered -- every result has "
+            "status ERROR. Promoting it would put a capture into tracked traces/ that "
+            "evidence/02-bakeoff.md could cite as a result. Fix the endpoint and "
+            "re-run, or pass --allow-error-run if the error transcript is the evidence."
         )
 
     findings: list[str] = []
@@ -87,10 +122,20 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="override destination root directory (defaults to traces/)",
     )
+    parser.add_argument(
+        "--allow-error-run",
+        action="store_true",
+        help="promote even when every result errored (the error is the evidence)",
+    )
     args = parser.parse_args(argv)
 
     try:
-        destination = promote(args.source, args.name, destination_root=args.dest_root)
+        destination = promote(
+            args.source,
+            args.name,
+            destination_root=args.dest_root,
+            allow_error_run=args.allow_error_run,
+        )
     except PromotionRefused as refusal:
         print(f"REFUSED: {refusal}", file=sys.stderr)
         return 1

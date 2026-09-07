@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -489,6 +491,16 @@ def test_no_unmapped_exit_code_reaches_pass(fake_planlint, configured, code):
     assert result["exit_code"] == code
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "POSIX signals (SIGKILL, SIGSEGV) are not applicable on Windows. "
+        "The negative-returncode contract is POSIX-only; on Windows a killed "
+        "process returns a non-zero positive code, which maps to "
+        "BLOCKED_UNEXPECTED_EXIT by the same code path -- but we cannot "
+        "use os.kill(pid, SIGKILL) to produce that here."
+    ),
+)
 @pytest.mark.parametrize("signal_name", ["SIGKILL", "SIGSEGV"])
 def test_a_process_killed_by_a_signal_is_blocked_never_pass(
     tmp_path, configured, fake_planlint, signal_name
@@ -499,22 +511,34 @@ def test_a_process_killed_by_a_signal_is_blocked_never_pass(
 
     Killed for real rather than simulated with `sys.exit(-11)`: those are
     different things, and only the first produces a negative returncode.
+
+    Skipped on Windows: POSIX process-group signals have no equivalent;
+    `os.kill(pid, signal.SIGKILL)` itself raises `OSError` on Windows.
+    The negative-returncode branch is exercised by the parametrized
+    `test_the_exit_code_mapping_never_returns_pass_for_an_unknown_code`
+    which covers code -11 in-process without spawning a POSIX signal.
     """
     # A distinct filename on purpose: `fake_planlint` writes to
     # `bin/planlint`, so naming this the same silently overwrote it and the
     # test measured the fixture instead of the signal. It passed for the wrong
     # reason first time round.
-    script = tmp_path / "bin" / f"planlint-{signal_name.lower()}"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(
-        "#!/usr/bin/env python3\n"
+    script_dir = tmp_path / "bin"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    py_name = f"planlint-{signal_name.lower()}.py"
+    py_script = script_dir / py_name
+    py_script.write_text(
         "import os, signal\n"
         f"os.kill(os.getpid(), signal.{signal_name})\n",
         encoding="utf-8",
     )
-    script.chmod(0o755)
+    sh = script_dir / f"planlint-{signal_name.lower()}"
+    sh.write_text(
+        f"#!/usr/bin/env {sys.executable}\n" + py_script.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    sh.chmod(0o755)
     configured(fake_planlint(exit_code=0))
-    result = lint_openspec(config=replace(load_planlint_config(), binary=str(script)))
+    result = lint_openspec(config=replace(load_planlint_config(), binary=str(sh)))
     assert result["exit_code"] is not None and result["exit_code"] < 0
     assert result["verdict"] == BLOCKED
     assert result["blocked_reason"] == BLOCKED_UNEXPECTED_EXIT
@@ -640,18 +664,33 @@ def test_undecodable_bytes_on_stdout_are_a_verdict_not_an_exception(tmp_path, co
     exactly this reason; `text=True` made it dead code for the two streams that
     matter, because the decode happened inside `subprocess` first.
     """
-    script = tmp_path / "bin" / "planlint-raw-bytes"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(
-        "#!/usr/bin/env python3\n"
+    script_dir = tmp_path / "bin"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    py_script = script_dir / "planlint-raw-bytes.py"
+    # Write raw bytes that are invalid in any common encoding. Use the binary
+    # buffer directly so neither the fake script nor the subprocess encoding
+    # layer corrupts or rejects the data before planlint.py sees it.
+    py_script.write_text(
         "import sys\n"
         'sys.stdout.buffer.write(b"\\xff\\xfe\\xff")\n'
+        "sys.stdout.buffer.flush()\n"
         "sys.exit(1)\n",
         encoding="utf-8",
     )
-    script.chmod(0o755)
+    if sys.platform == "win32":
+        bat = script_dir / "planlint-raw-bytes.bat"
+        bat.write_text(f'@"{sys.executable}" "{py_script}" %*')
+        binary = str(bat)
+    else:
+        sh = script_dir / "planlint-raw-bytes"
+        sh.write_text(
+            f"#!/usr/bin/env {sys.executable}\n" + py_script.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        sh.chmod(sh.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        binary = str(sh)
     configured(fake_planlint(exit_code=0))
-    result = lint_openspec(config=replace(load_planlint_config(), binary=str(script)))
+    result = lint_openspec(config=replace(load_planlint_config(), binary=binary))
     # The exit code is the verdict; undecodable bytes only downgrade evidence.
     assert result["verdict"] == FINDINGS
     assert result["exit_code"] == 1

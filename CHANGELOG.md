@@ -9,6 +9,114 @@ to lose by accident.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Probe exit code no longer certifies a run that never happened (D-03).**
+  `verifier_probe.py` returned 0 whenever nothing laundered, so an unreachable
+  endpoint, an unknown provider or a missing credential all reported success
+  and `make probe` was green for a bake-off that contacted no model. The
+  contract is now: `0` usable run with no laundering, `1` at least one row
+  laundered, `2` no row reached a model. A partial run still exits 0. Two
+  existing tests asserted the old contract by design (their own messages:
+  "an ERROR row is not a laundered failure, so the exit code stays 0") and
+  are updated to the new one.
+- **Promotion refuses a capture in which no model answered (D-04).**
+  `promote_trace.py` gated only on the credential scan, so `traces/` could
+  hold, and `evidence/02-bakeoff.md` could cite, a run where every slot
+  errored. Captures without a `summary.json` (manual exports) are unaffected;
+  `--allow-error-run` covers the case where the error transcript is the point.
+- **`summary.json` records POSIX paths on every platform (D-05).**
+  `_rel` returned `str(Path)`, so a Windows capture wrote
+  `configs\probes\02-verifier.md` where Linux wrote `configs/probes/...` for
+  the same run, and tracked evidence diffed against itself.
+- **An unwritable `--out` reports a usage error, not a traceback (D-06).**
+
+### Added
+
+- **AQA lane C** (`tests/aqa/test_aqa_live_endpoint.py`): the probe driven
+  against a real loopback HTTP server. The transport had only ever been tested
+  through an injected `post_fn`. Runs in CI's `transport` job; needs no
+  credential.
+- **AQA lane D** (`tests/aqa/test_aqa_live_llm.py`, marker `live_llm`): opt-in
+  acceptance against a real vendor LLM. Skips with a stated reason unless
+  `PROBE_LIVE=1` and the slot resolves. Never wired to CI.
+- **Regression guards** for D-03 (`tests/regression/test_probe_exit_contract.py`)
+  and for D-04/D-05/D-07 (`tests/regression/test_evidence_portability.py`),
+  including a repo-wide UTF-8 BOM check discovered via `git ls-files`.
+
+### Fixed (Windows platform-parity — branch h)
+
+- **D-01: Shebang scripts are not executable on Windows (WinError 193).** All
+  fake `planlint` binaries in the test fixtures used `#!/usr/bin/env python3`
+  scripts with `chmod(0o755)` — the standard POSIX pattern. On Windows,
+  `subprocess.Popen` cannot execute a shebang script directly and raises
+  `OSError: [WinError 193] %1 is not a valid Win32 application`. Every stub now
+  writes a `.bat` launcher on Windows and a shebang script on POSIX, keyed on
+  `sys.platform`. The pattern is encapsulated in the `make_stub` fixture in
+  `tests/conftest.py` so future tests share one canonical implementation.
+
+- **D-02: `sys.stdout.write` raises `UnicodeEncodeError` on Windows (cp1252).**
+  Fake scripts writing non-ASCII text (CJK characters for the byte-ceiling
+  tests) called `sys.stdout.write(str)`. Windows sets the console codepage to
+  cp1252 by default, which cannot encode CJK. The write raises before any bytes
+  reach the subprocess pipe, producing empty stdout and a false PASS in the
+  truncation tests. All fake scripts now write to `sys.stdout.buffer` (binary
+  buffer, UTF-8 explicit). The `.bat` launcher also sets `PYTHONUTF8=1` to
+  force UTF-8 stdio for all Python processes spawned on Windows.
+
+- **D-03: `mypy` reports `attr-defined` error on `os.killpg` (POSIX-only).**
+  `_CAN_KILL_GROUPS = hasattr(os, "killpg")` correctly guards the POSIX call
+  at runtime, but mypy cannot track `hasattr` narrowing and emits an error on
+  Windows-targeted mypy runs. Added `# type: ignore[attr-defined]` with
+  explanatory comment.
+
+- **POSIX-signal tests skip on Windows.** `test_a_process_killed_by_a_signal`
+  used `os.kill(pid, signal.SIGKILL)` — a POSIX-only system call. On Windows
+  it raises `OSError`. The test is now decorated with
+  `@pytest.mark.skipif(sys.platform == "win32", ...)` with a rationale
+  explaining that the negative-returncode branch is covered by in-process
+  exit-code parametrize tests that don't require a real signal.
+
+### Added (branch h)
+
+- **`tests/regression/` — regression guard layer.** A new test layer whose
+  invariant is: every test here corresponds to a specific defect that was once
+  broken and fixed. A failure means a fix was reverted. Covers D-01/D-02
+  (platform parity), F4 (RecursionError containment), F5 (stable envelope
+  shape), F9 (all allowed verbs reachable), F14 (coverage gate). Verb list
+  parametrize imports from `guards.ALLOWED_VERBS` — the source of truth —
+  rather than a hardcoded list that can drift.
+
+- **`make_stub` and `spec_repo` fixtures in `tests/conftest.py`.** The
+  cross-platform stub factory and the minimal openspec repo tree are now shared
+  fixtures available to every test layer. Tests that previously duplicated this
+  logic (`tests/regression/`, `tests/integration/`) now consume the fixture.
+
+- **`pytest.ini` — registered `regression` and `aqa` markers.** An
+  unregistered marker emits a `PytestUnknownMarkWarning` on every collection.
+  Both markers are now declared with descriptions.
+
+- **`Makefile` — `test-regression`, `aqa`, and `test-7layers` targets.**
+  `make test-regression` runs only the regression guard layer. `make aqa` runs
+  tests marked `@pytest.mark.aqa`. `make test-7layers` chains all eight layers
+  (7 functional + regression) in dependency order. All 7-layer targets were
+  also added (unit, integration, functional, e2e, journey, security, sanity)
+  to make the previously undocumented Makefile `.PHONY` entries actually run.
+
+### Changed (branch h)
+
+- **CI `contract` job now runs on `windows-latest` in addition to
+  `ubuntu-latest`.** The 12 failures fixed in branch h were all Windows-local.
+  CI was green throughout because it only tested on Linux. The Windows leg
+  closes this blind spot with `python-version: "3.12"` only (the floor, 3.10,
+  is Ubuntu-only to keep costs bounded). The shellcheck step is skipped on
+  Windows since `mapfile` and `bash -n` are POSIX-only.
+
+- **CI coverage step no longer hard-codes `--fail-under=80`.** The quality job
+  previously overrode `pyproject.toml`'s `fail_under = 90` with a lower CLI
+  flag. `coverage report` now runs without `--fail-under`, letting
+  `pyproject.toml` be the single source of truth.
+
 ### Fixed (four more places an exception stood in for a verdict)
 
 - **A NUL byte in a model-supplied path escaped `guards.check_target` as a bare
