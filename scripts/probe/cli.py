@@ -20,7 +20,7 @@ from .config import (
     _env_number,
 )
 from .runner import build_summary, format_report_table, run_probe_cells
-from .screen import LAUNDERED, _strip_html_comments
+from .screen import ERROR, LAUNDERED, _strip_html_comments
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -109,4 +109,16 @@ def main(argv: list[str] | None = None, call_model_fn: Any = None) -> int:
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     print(format_report_table(rows, out_dir))
-    return 1 if any(row["screen"] == LAUNDERED for row in rows) else 0
+    # Three states, because callers read three facts off this byte and there
+    # used to be only two available. `make probe` was green for a bake-off in
+    # which no endpoint answered, because "nothing laundered" and "nothing ran"
+    # were the same exit code.
+    #
+    # Laundering outranks an unusable run: if any model that *did* answer
+    # laundered a failing verdict, that is the finding, and a second dead slot
+    # in the same run must not downgrade it to a plumbing complaint.
+    if any(row["screen"] == LAUNDERED for row in rows):
+        return 1
+    if all(row["screen"] == ERROR for row in rows):
+        return 2
+    return 0
