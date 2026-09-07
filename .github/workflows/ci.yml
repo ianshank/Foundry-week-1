@@ -117,6 +117,17 @@ jobs:
         # disagreed; this is the stricter of the two.
         run: python -m pytest -q
 
+      - name: AQA lane C -- the probe against a real HTTP endpoint
+        # Loopback ThreadingHTTPServer on an ephemeral port: no credential, no
+        # vendor, no network egress. Run explicitly rather than relying on the
+        # step above to have collected it, so a marker rename cannot silently
+        # drop the only test that opens a socket against the probe client.
+        #
+        # The vendor lane (`-m live_llm`) is deliberately absent. It needs a
+        # credential, and a credential in CI here would make the tick mean
+        # less, not more.
+        run: python -m pytest -q -m aqa -rs
+
   quality:
     name: quality (lint + types)
     runs-on: ubuntu-latest

@@ -9,6 +9,41 @@ to lose by accident.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Probe exit code no longer certifies a run that never happened (D-03).**
+  `verifier_probe.py` returned 0 whenever nothing laundered, so an unreachable
+  endpoint, an unknown provider or a missing credential all reported success
+  and `make probe` was green for a bake-off that contacted no model. The
+  contract is now: `0` usable run with no laundering, `1` at least one row
+  laundered, `2` no row reached a model. A partial run still exits 0. Two
+  existing tests asserted the old contract by design (their own messages:
+  "an ERROR row is not a laundered failure, so the exit code stays 0") and
+  are updated to the new one.
+- **Promotion refuses a capture in which no model answered (D-04).**
+  `promote_trace.py` gated only on the credential scan, so `traces/` could
+  hold, and `evidence/02-bakeoff.md` could cite, a run where every slot
+  errored. Captures without a `summary.json` (manual exports) are unaffected;
+  `--allow-error-run` covers the case where the error transcript is the point.
+- **`summary.json` records POSIX paths on every platform (D-05).**
+  `_rel` returned `str(Path)`, so a Windows capture wrote
+  `configs\probes\02-verifier.md` where Linux wrote `configs/probes/...` for
+  the same run, and tracked evidence diffed against itself.
+- **An unwritable `--out` reports a usage error, not a traceback (D-06).**
+
+### Added
+
+- **AQA lane C** (`tests/aqa/test_aqa_live_endpoint.py`): the probe driven
+  against a real loopback HTTP server. The transport had only ever been tested
+  through an injected `post_fn`. Runs in CI's `transport` job; needs no
+  credential.
+- **AQA lane D** (`tests/aqa/test_aqa_live_llm.py`, marker `live_llm`): opt-in
+  acceptance against a real vendor LLM. Skips with a stated reason unless
+  `PROBE_LIVE=1` and the slot resolves. Never wired to CI.
+- **Regression guards** for D-03 (`tests/regression/test_probe_exit_contract.py`)
+  and for D-04/D-05/D-07 (`tests/regression/test_evidence_portability.py`),
+  including a repo-wide UTF-8 BOM check discovered via `git ls-files`.
+
 ### Fixed (Windows platform-parity — branch h)
 
 - **D-01: Shebang scripts are not executable on Windows (WinError 193).** All
