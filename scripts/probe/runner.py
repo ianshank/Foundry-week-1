@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .client import call_model
 from .config import REPO
-from .screen import ERROR, screen
+from .screen import ERROR, OK, screen
 
 
 def _rel(path: Path) -> str:
@@ -28,6 +29,43 @@ def _rel(path: Path) -> str:
         return PurePosixPath(resolved.relative_to(REPO)).as_posix()
     except ValueError:
         return resolved.as_posix()
+
+
+def row_reached_a_model(row: Mapping[str, Any]) -> bool:
+    """Did this slot get an answer back from a model?
+
+    One reader for a fact two gates were spelling differently: `cli.main`
+    decides the exit code on `row["screen"]`, `promote_trace` decides
+    promotion on `row["status"]`, and `ERROR` is the single value that appears
+    in both vocabularies. Nothing tied the two together, so if `call_model`'s
+    envelope ever stopped emitting `status`, the promotion gate would quietly
+    stop refusing dead runs while the exit-code guard stayed green.
+
+    Stated positively -- `status == OK`, not `status != ERROR` -- so a row
+    whose status is missing, or is some third value this code has never seen,
+    counts as *not* having reached a model. Refusing a shape it cannot read is
+    the only safe direction: the negative form is vacuously true for a key
+    that is never there, which would make every dead run promotable.
+
+    `screen` is checked too, because the two keys are two spellings of one
+    fact and a row that disagrees with itself is not evidence either way.
+    """
+    return row.get("status") == OK and row.get("screen") != ERROR
+
+
+def no_model_answered(summary: Mapping[str, Any]) -> bool:
+    """True when a capture's every row failed before reaching a model.
+
+    Returns False for a summary this cannot positively read as such -- no
+    `results` list, or an empty one. `promote_trace` depends on that: manual
+    exports have no `summary.json` at all and are a documented input.
+    """
+    rows = summary.get("results") if isinstance(summary, Mapping) else None
+    if not isinstance(rows, list) or not rows:
+        return False
+    return all(
+        isinstance(row, Mapping) and not row_reached_a_model(row) for row in rows
+    )
 
 
 def run_probe_cells(

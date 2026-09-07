@@ -43,27 +43,37 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "scripts", _REPO_ROOT / "mcp_server" / "s
         sys.path.insert(0, os.fspath(_path))
 
 
-def _configured_env_names() -> tuple[str, ...]:
-    """Every environment variable the package reads, from the source of truth.
+def _isolated_env_names() -> tuple[str, ...]:
+    """Every variable the suite clears, from both planes' sources of truth.
 
     Enumerating them here by hand is how the list goes stale: the two ceilings
     added for the findings payload would have been missed, and the isolation
     would have quietly stopped covering the newest settings -- exactly when it
     is needed most.
-    """
-    from foundry_spike_mcp import config
 
-    return tuple(
+    Two sources, unioned here rather than merged into one list upstream,
+    because the two planes isolate differently. The package's registry is
+    total: every `ENV_*` it declares should be cleared unconditionally.
+    The probe's is not -- `PROBE_LIVE` and `PROBE_MODELS` configure the opt-in
+    live lane, and clearing those would not isolate that lane, it would delete
+    it. `probe.config.ISOLATED_ENV` is that deliberate carve-out, named there
+    so the exclusion is visible next to the names it excludes.
+    """
+    from foundry_spike_mcp import config as package_config
+    from probe import config as probe_config
+
+    package = tuple(
         value
-        for name, value in vars(config).items()
+        for name, value in vars(package_config).items()
         if name.startswith("ENV_") and isinstance(value, str)
     )
+    return (*package, *probe_config.ISOLATED_ENV)
 
 
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start every test from a known-empty configuration."""
-    for name in _configured_env_names():
+    for name in _isolated_env_names():
         monkeypatch.delenv(name, raising=False)
 
 

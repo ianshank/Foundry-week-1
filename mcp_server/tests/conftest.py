@@ -7,23 +7,38 @@ from pathlib import Path
 
 import pytest
 
-# Every test starts from a known-empty environment for the variables the tools
-# read. Otherwise a developer's real PLANLINT_TARGET leaks into the suite and
-# the guard tests pass for the wrong reason.
-_TOOL_ENV = (
-    "PLANLINT_TARGET",
-    "PLANLINT_ALLOWED_ROOTS",
-    "PLANLINT_BIN",
-    "PLANLINT_TIMEOUT",
-    "PLANLINT_JSON_FLAG",
-    "EVAL_SINK_DIR",
-    "EVAL_ALLOWED_ROOTS",
-)
+
+def configured_env_names() -> tuple[str, ...]:
+    """Every environment variable the package reads, from the source of truth.
+
+    This was a hand-written seven-name tuple against a `config.py` that
+    declares fifteen, and the eight it omitted were not cosmetic: with
+    `EVAL_MAX_ARTIFACT_BYTES=1` in the shell, eighteen tests in
+    `test_scoring.py` fail; with `FOUNDRY_SPIKE_STDOUT_LIMIT=1`,
+    `test_exit_two_is_blocked_not_pass_and_does_not_raise` fails. The contract
+    suite's result depended on the developer's environment, which is the exact
+    failure the fixture below exists to prevent.
+
+    `tests/conftest.py` already solved this by reflection; the fix never
+    reached here. Reflecting over `ENV_*` means a setting added to `config.py`
+    cannot be added without this isolation covering it.
+
+    Deliberately imports only `foundry_spike_mcp`: `cd mcp_server && pytest`
+    and the Docker `contract` stage both run this suite standalone, with
+    neither `scripts/` nor the root `tests/` on the path.
+    """
+    from foundry_spike_mcp import config
+
+    return tuple(
+        value
+        for name, value in vars(config).items()
+        if name.startswith("ENV_") and isinstance(value, str)
+    )
 
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in _TOOL_ENV:
+    for name in configured_env_names():
         monkeypatch.delenv(name, raising=False)
 
 

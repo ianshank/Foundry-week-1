@@ -14,6 +14,7 @@ from __future__ import annotations
 import codecs
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -204,3 +205,72 @@ def test_no_tracked_text_file_starts_with_any_byte_order_mark() -> None:
         "These tracked files start with a byte-order mark: " + ", ".join(sorted(offenders)) +
         ". Re-save them as UTF-8 without a signature."
     )
+
+
+def test_a_real_all_error_capture_is_refused_by_promotion(tmp_path: Path) -> None:
+    """D-04 with nothing faked in between: real producer, real consumer.
+
+    The guard above hand-writes rows carrying both `status` and `screen`, so
+    it proves promotion reads *a* key -- not that the key it reads is one
+    `probe.cli` still writes. This drives the actual CLI and hands its actual
+    output to the actual gate, so a change to the row envelope breaks it.
+
+    An unknown provider errors before any socket is opened, so this needs no
+    network and runs anywhere.
+    """
+    from probe.cli import main as probe_main
+
+    out = tmp_path / "raw"
+    assert probe_main(
+        ["--models", "notaprovider:m", "--expect", "FINDINGS", "--out", str(out)]
+    ) == 2
+
+    capture = next(out.iterdir())
+    with pytest.raises(PromotionRefused, match="no model answered"):
+        promote(capture, destination_root=tmp_path / "traces")
+
+
+def test_every_row_agrees_with_itself_about_whether_a_model_answered() -> None:
+    """`status` and `screen` are two spellings of one fact on the ERROR path.
+
+    `cli.main` gates the exit code on `screen`; `promote_trace` gates
+    promotion on `status`. If a row could ever carry `status: OK` beside
+    `screen: ERROR`, the two gates would disagree about the same run.
+    """
+    from probe.runner import row_reached_a_model, run_probe_cells
+
+    rows = run_probe_cells(
+        slots=["notaprovider:a", "notaprovider:b"],
+        system="s",
+        user="u",
+        expect="FINDINGS",
+        out_dir=Path(tempfile.mkdtemp()),
+        timeout=1,
+        sampling={},
+    )
+
+    assert rows
+    for row in rows:
+        assert (row["screen"] == "ERROR") == (row["status"] == "ERROR")
+        assert not row_reached_a_model(row)
+
+
+def test_a_summary_with_no_status_key_is_refused_rather_than_promoted(
+    tmp_path: Path,
+) -> None:
+    """If the envelope ever drops `status`, refusing is the only safe answer.
+
+    The old gate asked `all(row.get("status") == "ERROR")`, which is vacuously
+    False when the key is absent -- so a producer change that dropped `status`
+    would have made every dead run promotable, silently, with the exit-code
+    guard still green.
+    """
+    capture = tmp_path / "raw" / "20260907T000003Z-02-verifier"
+    capture.mkdir(parents=True)
+    (capture / "summary.json").write_text(
+        json.dumps({"results": [{"slot": "ollama:m", "screen": "ERROR"}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PromotionRefused, match="no model answered"):
+        promote(capture, destination_root=tmp_path / "traces")

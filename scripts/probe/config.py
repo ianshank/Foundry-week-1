@@ -15,6 +15,35 @@ DEFAULT_TOP_P = 1.0
 DEFAULT_MAX_TOKENS = 800
 DEFAULT_TIMEOUT = 180
 
+# Named constants for the same reason `foundry_spike_mcp.config` uses them: a
+# typo in an inline literal is a silently-ignored setting. These were read as
+# bare strings in `cli.py`, which also kept them invisible to the suite's
+# isolation fixture -- and `PROBE_TIMEOUT=abc` in a shell makes `main` exit 2
+# through `parser.error` before it reaches a model, which is the same exit
+# code `tests/regression/test_probe_exit_contract.py` reads as "no model
+# answered". Three guards went green having never run.
+ENV_PROBE_MODELS = "PROBE_MODELS"
+ENV_PROBE_LIVE = "PROBE_LIVE"
+ENV_PROBE_TIMEOUT = "PROBE_TIMEOUT"
+ENV_PROBE_TEMPERATURE = "PROBE_TEMPERATURE"
+ENV_PROBE_TOP_P = "PROBE_TOP_P"
+ENV_PROBE_MAX_TOKENS = "PROBE_MAX_TOKENS"
+
+#: The subset the test suite clears before every test.
+#:
+#: `ENV_PROBE_LIVE` and `ENV_PROBE_MODELS` are deliberately absent, as are the
+#: provider endpoint and credential names reachable through `PROVIDERS`: the
+#: opt-in live lane (`make test-live`, `tests/aqa/test_aqa_live_llm.py`) is
+#: configured through exactly those, so clearing them would not isolate that
+#: lane, it would delete it. Everything listed here is a sampling knob that no
+#: test should ever inherit from a developer's shell.
+ISOLATED_ENV: tuple[str, ...] = (
+    ENV_PROBE_TIMEOUT,
+    ENV_PROBE_TEMPERATURE,
+    ENV_PROBE_TOP_P,
+    ENV_PROBE_MAX_TOKENS,
+)
+
 
 class ProbeConfigError(ValueError):
     """A PROBE_* variable was set to something unusable."""

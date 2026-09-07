@@ -16,7 +16,7 @@ from .config import (
     DEFAULT_TIMEOUT,
     PROVIDERS,
 )
-from .screen import ERROR
+from .screen import ERROR, OK
 
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 
@@ -118,7 +118,7 @@ def call_model(
     if not isinstance(usage, dict):
         return {"status": ERROR, "error": "usage is not an object", "raw": body}
     return {
-        "status": "OK",
+        "status": OK,
         "text": text,
         "latency_ms": elapsed_ms,
         "prompt_tokens": usage.get("prompt_tokens"),

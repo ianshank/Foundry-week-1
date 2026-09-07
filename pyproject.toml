@@ -60,6 +60,12 @@ extraPaths = ["mcp_server/src", "scripts", "."]
 
 [tool.mypy]
 python_version = "3.10"
+# Deliberately does *not* include `scripts`, though `pytest.ini`'s
+# `pythonpath` does. Adding it makes `scripts/scan_evidence.py` reachable as
+# both `scan_evidence` and `scripts.scan_evidence`, which mypy rejects as a
+# duplicate module. Scripts that import each other therefore spell it
+# `scripts.<module>`, with a bare fallback for the runtime paths where only
+# `scripts/` is on `sys.path`.
 mypy_path = ["mcp_server/src", "."]
 explicit_package_bases = true
 files = ["mcp_server/src", "scripts"]

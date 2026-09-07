@@ -17,7 +17,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .config import load_planlint_config
+from .config import (
+    ENV_SELFCHECK_BLOCKED_TARGET,
+    ENV_SELFCHECK_FINDINGS_TARGET,
+    ENV_SELFCHECK_PASS_TARGET,
+    ConfigError,
+    load_planlint_config,
+)
 from .planlint import lint_openspec
 from .verdicts import BLOCKED, FINDINGS, PASS
 
@@ -30,12 +36,13 @@ def _selfcheck(output: Path | None) -> int:
     precondition error the runbook asks for, and creating one is more reliable
     than hoping a stale path is still empty.
     """
-    blocked_target = os.environ.get("SELFCHECK_BLOCKED_TARGET", "").strip()
+    blocked_target = os.environ.get(ENV_SELFCHECK_BLOCKED_TARGET, "").strip()
     scratch: tempfile.TemporaryDirectory[str] | None = None
     if not blocked_target:
         scratch = tempfile.TemporaryDirectory(prefix="foundry-spike-blocked-")
         blocked_target = scratch.name
 
+    config_error: str | None = None
     try:
         config = load_planlint_config()
         # The scratch dir must be inside the allow list or the guard, quite
@@ -45,24 +52,39 @@ def _selfcheck(output: Path | None) -> int:
             config,
             allowed_roots=config.allowed_roots + (Path(blocked_target),)
         )
-    except ValueError:
-        # If config is invalid, let lint_openspec handle it
+    except ConfigError as error:
+        # `ConfigError`, not `ValueError`. The wider catch was one refactor
+        # away from swallowing an unrelated ValueError and reporting a
+        # misconfigured run as a clean one -- and a self-check that hides why
+        # it fell back is the failure mode this file exists to detect.
+        # Recorded rather than discarded, so the report says what happened.
         config = None
+        config_error = str(error)
 
+    # The constant travels with the case so the skip message and the lookup
+    # cannot drift: the message used to be rebuilt as an f-string from the
+    # case name, which is a second spelling of the variable it names.
     cases = [
-        ("pass", os.environ.get("SELFCHECK_PASS_TARGET", "").strip(), PASS),
-        ("findings", os.environ.get("SELFCHECK_FINDINGS_TARGET", "").strip(), FINDINGS),
-        ("blocked", blocked_target, BLOCKED),
+        ("pass", ENV_SELFCHECK_PASS_TARGET, PASS),
+        ("findings", ENV_SELFCHECK_FINDINGS_TARGET, FINDINGS),
+        ("blocked", ENV_SELFCHECK_BLOCKED_TARGET, BLOCKED),
     ]
 
     report: dict[str, Any] = {"cases": [], "all_expected": True}
-    for name, target, expected in cases:
+    if config_error is not None:
+        report["config_error"] = config_error
+    for name, env_name, expected in cases:
+        target = (
+            blocked_target
+            if env_name == ENV_SELFCHECK_BLOCKED_TARGET
+            else os.environ.get(env_name, "").strip()
+        )
         if not target:
             report["cases"].append(
                 {
                     "case": name,
                     "skipped": True,
-                    "why": f"set SELFCHECK_{name.upper()}_TARGET to run this case",
+                    "why": f"set {env_name} to run this case",
                 }
             )
             report["all_expected"] = False

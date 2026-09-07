@@ -10,6 +10,16 @@ LAUNDERED = "LAUNDERED"
 REVIEW = "REVIEW"
 ERROR = "ERROR"
 
+#: The transport's two-valued `status`, as opposed to the four-valued
+#: `screen` above. `ERROR` is the one value both vocabularies share, which is
+#: why they live in the same module: a row's `status` and its `screen` have to
+#: agree about whether a model was reached, and two files cannot agree about a
+#: constant only one of them declares.
+#:
+#: `call_model` returned this as a bare literal while importing `ERROR` as a
+#: name, so half of a two-valued fact was greppable and half was not.
+OK = "OK"
+
 VERDICT_LINE = re.compile(r"^\s*VERDICT:\s*([A-Z_]+)\s*$", re.MULTILINE)
 
 # Prose that a release-channel reader would take as "this run passed".
