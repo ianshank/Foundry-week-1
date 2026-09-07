@@ -150,6 +150,27 @@ Local `h` (1e24893) carried a UTF-8 BOM at `tests/integration/test_mcp_integrati
 
 ---
 
+## Second Pass: Four-Way Peer Review, Then Live Execution
+
+The first draft of this plan was single-pass reasoning: reproductions run, RCA written, fixes designed, but never applied. Before handing it to an execution agent it went through two more rounds — a parallel multi-agent review, then this plan's own author applying every task's code in a disposable clone and running it for real. Both rounds found things the other missed; neither alone would have been enough. What follows is what changed and why, so an executor does not have to re-derive it.
+
+**Round 1 — four parallel reviewers, dispatched against the first draft:**
+
+| Reviewer | Scope | Verdict |
+|---|---|---|
+| Explore agent | Fact-check every quoted line number, signature, and "before" string against the live repo | All quoted code matched byte-for-byte. One gap: the Makefile edit gave no anchor text to locate `aqa:` / `.PHONY` by. |
+| `feature-dev:code-reviewer` | Adversarial logic review of every proposed code change | Two findings: a `ruff E402` violation baked into the plan's own "append to this file" instructions (Tasks 4 and 6 told the executor to add import statements *after* Task 3's functions), and a BOM guard that filters by file extension, so an extensionless tracked file (`Makefile`, `.github/CODEOWNERS`) would never be scanned — the opposite of the guard's own stated purpose. Six other suspected trouble spots (exit-code boundary cases, `_rel`'s Windows behavior, `promote()`'s new keyword, argparse's exit code, the live-vendor skip logic, HTTP/1.1 keep-alive) were each checked against the real source and cleared. |
+| `security-auditor` | Credential handling in the new live-HTTP and live-vendor test code | One moderate finding: Task 5's assertion message interpolated `result.get("detail")`, which can carry up to 600 characters of a vendor's raw HTTP error body — if a vendor ever echoes a request header back in an error, a bearer token could land in test output. Loopback binding, JSON deserialization, and the `git ls-files` subprocess call were all clean. |
+| `test-runner` (isolated worktree) | Actually apply and run every task's code | **Failed to start** — a stale worktree left under `.claude/worktrees/` from an unrelated earlier session had a `core.worktree` redirect that made the isolation mechanism refuse to run. Not fixed by re-dispatching; see Round 2. |
+
+**Round 2 — since the one agent built to actually *run* the code couldn't start, its job was done by hand:** a plain `git clone --local` of this branch into a scratch directory (sidestepping the broken worktree entirely), then every task's exact code applied in order, task by task, with the full lane A/B/C/D gauntlet, `ruff`, `mypy`, and coverage run after each one — the same discipline the failed agent would have followed. This surfaced the review's blind spot:
+
+**The critical finding neither the reviewers nor the fact-checker could have caught, because it isn't in the new code at all:** applying Task 2's exit-code fix and running the full suite broke two *existing* tests — `tests/test_cli_entrypoints.py::test_probe_main_writes_transcripts_and_a_summary_even_when_calls_fail` and `tests/test_verifier_screen.py::test_an_explicit_flag_wins_over_a_broken_environment_variable` — both of which assert `code == 0` for a run where the only slot errored, with the old contract spelled out in the assertion message itself: `"an ERROR row is not a laundered failure, so the exit code stays 0"` and `"an unreachable endpoint is an ERROR row, not a laundered failure"`. These are not incidental breakage; they are the D-03 defect encoded as *intentional, documented* behavior. A reviewer reading only the diff of new files would never see them, because they are not in any file this plan touches — they are two tests, unrelated on their face, that happen to assert on the exit code of the exact scenario D-03 fixes. Task 2 below now updates both as part of the same fix, not as an afterthought.
+
+**Every fix below reflects this second pass**, and every import block shown is the literal, `ruff check`-verified text — not a plausible reconstruction. The full sequence (baseline suite, then each task's code applied and lane-tested in order, ending with all four lanes plus coverage) was run to completion with a clean result before this rewrite: **ruff clean, mypy clean (19 source files), lane A 344→349 passed / 8 skipped, lane B identical, lane C 6 passed, lane D 2 skipped with the two distinct proof-of-gating reasons below, coverage 93% (floor 90), secret scan 0 hits.**
+
+---
+
 ## Verification Lanes
 
 Four lanes. Every task's final step runs at least lane A; Task 7 runs all four.
@@ -223,7 +244,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from tests.aqa.live_endpoint import live_llm_endpoint, read_summary, run_probe
 
 pytestmark = pytest.mark.aqa
@@ -400,6 +420,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Modify: `scripts/probe/cli.py` (the `return` at the end of `main`)
 - Create: `tests/regression/test_probe_exit_contract.py`
 - Modify: `tests/aqa/test_aqa_live_endpoint.py` (add the live-socket acceptance cases)
+- Modify: `tests/test_cli_entrypoints.py:227`, `tests/test_verifier_screen.py:319` — two existing tests assert the old exit-code contract by name in their own failure message; found by running the full suite after the fix, not by inspection (Step 5)
 
 **Interfaces:**
 - Consumes: `live_llm_endpoint`, `run_probe`, `read_summary` from Task 1; `scripts.probe.screen.ERROR` and `LAUNDERED`.
@@ -505,7 +526,56 @@ Note `all(...)` on a non-empty list: `main` already `parser.error`s on an empty 
 Run: `python -m pytest tests/regression/test_probe_exit_contract.py -v`
 Expected: 3 passed.
 
-- [ ] **Step 5: Add the live-socket acceptance cases**
+- [ ] **Step 5: Update the two existing tests that encode the old contract as intentional**
+
+Run the full suite now, before going further: `python -m pytest -q`. Two failures appear that Steps 1-4 did not predict:
+
+```
+FAILED tests/test_cli_entrypoints.py::test_probe_main_writes_transcripts_and_a_summary_even_when_calls_fail
+FAILED tests/test_verifier_screen.py::test_an_explicit_flag_wins_over_a_broken_environment_variable
+```
+
+Both assert `code == 0` for a run whose only slot errors — exactly the D-03 scenario — and both say so in the assertion message itself:
+
+```
+tests/test_cli_entrypoints.py:227:
+    assert code == 0, "an ERROR row is not a laundered failure, so the exit code stays 0"
+
+tests/test_verifier_screen.py:319:
+    assert code == 0, "an unreachable endpoint is an ERROR row, not a laundered failure"
+```
+
+These are not incidental breakage. They are the D-03 defect written down as a deliberate design decision, in two places nothing in this plan's diff touches — which is exactly why a reviewer reading only new files would never see them. The reasoning in both messages was correct about the *first* half ("an ERROR row is not a laundered failure") and wrong about the conclusion ("so the exit code stays 0") — D-03 is precisely the gap between those two clauses. Fix both in place:
+
+`tests/test_cli_entrypoints.py:227`, change:
+```python
+    assert code == 0, "an ERROR row is not a laundered failure, so the exit code stays 0"
+```
+to:
+```python
+    assert code == 2, "the only row is ERROR, so no model was ever reached"
+```
+
+`tests/test_verifier_screen.py:319`, change:
+```python
+    assert code == 0, "an unreachable endpoint is an ERROR row, not a laundered failure"
+```
+to:
+```python
+    assert code == 2, "the only slot is ERROR, so no model was ever reached"
+```
+
+Neither test's other assertions change — `test_probe_main_writes_transcripts_and_a_summary_even_when_calls_fail` still checks the summary shape and `screen == ERROR`; `test_an_explicit_flag_wins_over_a_broken_environment_variable` still checks that the malformed `PROBE_MAX_TOKENS` was never read. Only the exit-code expectation moves, because only the exit-code contract changed.
+
+Before committing to this being the complete set, confirm no third place makes the same assumption:
+
+```bash
+grep -rn "not a laundered failure\|ERROR row is not\|exit code stays 0\|assert code == 0" tests/ scripts/ mcp_server/ --include='*.py'
+```
+
+Expected: no remaining matches (the two above are gone; `tests/aqa/test_aqa_live_endpoint.py`'s own `assert code == 0` lines, added in Step 6 below, are for *different* scenarios — HELD and REVIEW rows, not all-ERROR runs — and are correct as written).
+
+- [ ] **Step 6: Add the live-socket acceptance cases**
 
 Append to `tests/aqa/test_aqa_live_endpoint.py`:
 
@@ -570,17 +640,18 @@ def test_partial_run_still_exits_zero(
     assert screens == {"ollama:live": "HELD", "github:unreachable": "ERROR"}
 ```
 
-- [ ] **Step 6: Run every lane touched**
+- [ ] **Step 7: Run every lane touched**
 
-Run: `python -m pytest tests/aqa/ tests/regression/ -v` — expected: all pass.
-Run: `python -m pytest -q` — expected: full suite green.
+Run: `python -m pytest tests/aqa/ tests/regression/ tests/test_cli_entrypoints.py tests/test_verifier_screen.py -v` — expected: all pass.
+Run: `python -m pytest -q` — expected: full suite green (this is what Step 5 already ran once to surface the two breakages; run it again now to confirm both are fixed and nothing else moved).
 Run: `python -m ruff check . && python -m mypy` — expected: clean.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add scripts/probe/cli.py tests/regression/test_probe_exit_contract.py \
-        tests/aqa/test_aqa_live_endpoint.py
+        tests/aqa/test_aqa_live_endpoint.py \
+        tests/test_cli_entrypoints.py tests/test_verifier_screen.py
 git commit -m "fix(probe): exit 2 when no model was reached (D-03)
 
 The exit code carried one fact and callers read two, so an unreachable
@@ -588,6 +659,12 @@ endpoint, an unknown provider and a missing credential all exited 0 --
 make probe was green for a bake-off that never contacted a model.
 Laundering still outranks an unusable run, and a partial run still
 exits 0.
+
+Two existing tests asserted the old contract deliberately (their own
+messages: 'an ERROR row is not a laundered failure, so the exit code
+stays 0') and are updated to the new one -- their reasoning about ERROR
+vs. LAUNDERED was correct, only the conclusion about the exit code
+changes.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
@@ -750,7 +827,7 @@ Two fixes, one task: both are "a bad input should produce a message, not a surpr
 **Files:**
 - Modify: `scripts/promote_trace.py` (`promote`, and its argparse setup)
 - Modify: `scripts/probe/cli.py` (the `out_dir.mkdir` call)
-- Modify: `tests/regression/test_evidence_portability.py` (append)
+- Modify: `tests/regression/test_evidence_portability.py` (extend the import block, then append — see Step 1's note on why these are two separate edits)
 
 **Interfaces:**
 - Consumes: `scripts.promote_trace.promote`, `PromotionRefused` (both exist).
@@ -758,14 +835,29 @@ Two fixes, one task: both are "a bad input should produce a message, not a surpr
 
 - [ ] **Step 1: Write the failing regression guards**
 
-Append to `tests/regression/test_evidence_portability.py`:
+Two edits to `tests/regression/test_evidence_portability.py`, in this order — **do not simply append the import lines after Task 3's functions.** Ruff's `E402` ("module level import not at top of file") triggers the moment a top-level `def` appears before a top-level `import`, and Task 3's file already ends with two `def test_rel_...` functions. This was caught in review: an earlier draft of this task told the executor to append the whole block — imports included — after those functions, which is exactly the shape `E402` flags. Every later "run ruff, expect clean" checkpoint in this task and Task 6 depends on getting this right here.
+
+**Edit 1 — extend the existing import block at the top of the file** (do not touch anything else in it):
 
 ```python
-import json
+from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import pytest
+
+from probe.runner import _rel
 from promote_trace import PromotionRefused, promote
 
+pytestmark = pytest.mark.regression
+```
 
+That is, add `import json` next to the existing stdlib imports (alphabetically before `from pathlib import Path`) and add `from promote_trace import PromotionRefused, promote` next to the existing first-party import (alphabetically after `from probe.runner import _rel`). This exact ordering was verified with `ruff check` — `json`/`pathlib` group as stdlib, `pytest` alone as third-party, `probe.runner`/`promote_trace` together as first-party (both resolve under the `scripts` source root declared in `pyproject.toml`'s `[tool.ruff] src`).
+
+**Edit 2 — append the new test code to the end of the file** (this part *is* a pure append; only code, no imports go here):
+
+```python
 def _capture(root: Path, name: str, statuses: list[str]) -> Path:
     """A minimal capture directory shaped like one verifier_probe.py writes."""
     capture = root / name
@@ -983,6 +1075,8 @@ The lane the environment could not run. It must be impossible for it to pass wit
 - Consumes: `scripts.probe.config.PROVIDERS`, `scripts.probe.client.call_model`, and `run_probe`/`read_summary` from Task 1.
 - Produces: nothing later tasks depend on. Task 7 wires lane C to CI and deliberately leaves lane D out.
 
+**Security note (found in review, applied below):** the assertion in Step 2's first test deliberately reads only `result.get("error")`, never `result.get("detail")`. `detail` carries up to 600 raw characters of a vendor's HTTP error body (`scripts/probe/client.py`'s `except urllib.error.HTTPError` branch); if a vendor ever echoes a request header back on failure, a bearer token could land in this assertion's failure message and from there into captured CI/test output. `error` is always a fixed, code-shaped string (`"HTTP 401"`, `"URLError: ..."`) and never contains request content.
+
 - [ ] **Step 1: Register the marker**
 
 In `pytest.ini`, append to the `markers` block:
@@ -1018,10 +1112,10 @@ import os
 from pathlib import Path
 
 import pytest
+from tests.aqa.live_endpoint import read_summary
 
 from probe.client import call_model
 from probe.config import PROBES, PROVIDERS
-from tests.aqa.live_endpoint import read_summary
 
 pytestmark = [pytest.mark.aqa, pytest.mark.live_llm]
 
@@ -1063,7 +1157,13 @@ def test_live_model_answers_over_the_real_transport() -> None:
 
     for slot in slots:
         result = call_model(slot, system, user, timeout=120)
-        assert result["status"] == "OK", f"{slot}: {result.get('error')} {result.get('detail', '')}"
+        # Deliberately omits result.get("detail"): a vendor's raw HTTP error
+        # body can run to 600 characters and, if the vendor ever echoes a
+        # request header back on failure, could carry the bearer token into
+        # this assertion's message and from there into captured test output.
+        # `error` is a fixed, code-shaped string (e.g. "HTTP 401"); it never
+        # contains request content.
+        assert result["status"] == "OK", f"{slot} did not answer: {result.get('error', 'unknown error')}"
         assert result["text"].strip(), f"{slot} returned empty content"
         assert result["latency_ms"] > 0
 
@@ -1119,9 +1219,33 @@ If no vendor is reachable, record that in the task's report as *not run*, with t
 
 - [ ] **Step 6: Add the Makefile target**
 
-Add `test-live` to the `.PHONY` list, and add the target after `aqa`:
+Two edits, both append-only. The current `.PHONY` list (verified against the file directly — this is an exact anchor, not a paraphrase) ends:
 
 ```make
+        test-security test-sanity test-regression aqa test-7layers \
+        shellcheck docker-test docker-transport docker-lint clean
+```
+
+Add `test-live` between `aqa` and `test-7layers`:
+
+```make
+        test-security test-sanity test-regression aqa test-live test-7layers \
+        shellcheck docker-test docker-transport docker-lint clean
+```
+
+The current `aqa:` target reads:
+
+```make
+aqa: ## AQA acceptance layer: tests marked with @pytest.mark.aqa
+	$(PYTEST) -m aqa -v
+```
+
+Add the new target directly after it (blank line, then the new target — indentation is a literal tab, matching every other recipe line in this file):
+
+```make
+aqa: ## AQA acceptance layer: tests marked with @pytest.mark.aqa
+	$(PYTEST) -m aqa -v
+
 test-live: ## Lane D: contact a real vendor LLM (opt-in: PROBE_LIVE=1 PROBE_MODELS=...)
 	PROBE_LIVE=$${PROBE_LIVE:-1} $(PYTEST) -m live_llm -v -rs
 ```
@@ -1151,19 +1275,37 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 The fix is already in the branch (a4d3f22). This adds the guard that was missing.
 
 **Files:**
-- Modify: `tests/regression/test_evidence_portability.py` (append)
+- Modify: `tests/regression/test_evidence_portability.py` (extend the import block, then append)
 
 **Interfaces:**
-- Consumes: nothing new. Uses `subprocess` + `git ls-files` so the guard covers tracked files rather than a hand-maintained list.
+- Consumes: nothing new. Uses `subprocess` + `git ls-files -z` with no pathspec, so the guard covers every tracked file rather than a hand-maintained extension list.
 
 - [ ] **Step 1: Write the guard**
 
-Append to `tests/regression/test_evidence_portability.py`:
+Same two-part discipline as Task 4 Step 1 — extend the top-of-file import block, then append the new test function at the end. Do not append `import subprocess` after Task 4's functions; that reintroduces the same `E402` shape Task 4 Step 1's note warns about.
+
+**Edit 1 — extend the top-of-file import block** (now includes everything Tasks 3, 4 and 6 need):
 
 ```python
-import subprocess
-import sys
+from __future__ import annotations
 
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from probe.runner import _rel
+from promote_trace import PromotionRefused, promote
+
+pytestmark = pytest.mark.regression
+```
+
+Only `import subprocess` is new here (alphabetically between `json` and `pathlib`); everything else is already in the file from Task 4 Step 1.
+
+**Edit 2 — append the new test function to the end of the file:**
+
+```python
 _BOM = b"\xef\xbb\xbf"
 
 
@@ -1172,30 +1314,43 @@ def test_no_tracked_text_file_starts_with_a_utf8_bom() -> None:
 
     `tests/integration/test_mcp_integration.py` carried one and it was removed
     in a4d3f22. Nothing stopped the next editor putting one back, in that file
-    or any other -- Windows editors add them silently. Discovered via
-    `git ls-files` rather than a listed set, because a hand-maintained list is
-    how the third file gets missed.
+    or any other -- Windows editors add them silently.
+
+    Discovered via `git ls-files` with **no pathspec** -- not filtered to
+    `*.py`/`*.md`/etc. -- because an extension whitelist is exactly the kind
+    of hand-maintained list this guard exists to avoid, and this repository
+    already tracks extensionless files an extension filter would silently
+    skip: `Makefile` and `.github/CODEOWNERS` both matched no pattern in an
+    earlier draft of this test, which would have made a BOM in either of them
+    invisible to a guard whose whole stated purpose is repo-wide coverage.
     """
     repo_root = Path(__file__).resolve().parents[2]
     listed = subprocess.run(
-        ["git", "ls-files", "-z", "*.py", "*.md", "*.yml", "*.yaml",
-         "*.ini", "*.toml", "*.sh", "*.cfg", "*.txt"],
+        ["git", "ls-files", "-z"],
         cwd=repo_root, capture_output=True, check=True,
     )
     paths = [p for p in listed.stdout.decode("utf-8").split("\0") if p]
     assert paths, "git ls-files matched nothing -- discovery is broken, not the repo clean"
 
-    offenders = [
-        p for p in paths
-        if (repo_root / p).is_file() and (repo_root / p).read_bytes()[:3] == _BOM
-    ]
+    offenders = []
+    for rel in paths:
+        full = repo_root / rel
+        if not full.is_file():
+            continue
+        try:
+            head = full.read_bytes()[:3]
+        except OSError:
+            continue
+        if head == _BOM:
+            offenders.append(rel)
+
     assert not offenders, (
         "These tracked files start with a UTF-8 BOM: " + ", ".join(sorted(offenders)) +
         ". Re-save them as UTF-8 without a signature."
     )
 ```
 
-Note `sys` is imported for the platform guard in Step 2; if you skip that guard, drop the import so ruff's `F401` stays quiet.
+The `try/except OSError` around `read_bytes()` is not decoration: `git ls-files -z` with no pathspec lists every tracked path, including a submodule gitlink or a path that has since been deleted from the working tree but not yet from the index in some workflow — `is_file()` already filters most of that, but a permission error or a race against a concurrent checkout should skip the file rather than crash the guard.
 
 - [ ] **Step 2: Decide the git-absent case**
 
@@ -1206,11 +1361,12 @@ The suite already assumes git in `tests/test_evidence_hygiene.py`, so no skip gu
 Run: `python -m pytest tests/regression/test_evidence_portability.py -k bom -v`
 Expected: PASS (a4d3f22 already removed the only BOM).
 
-- [ ] **Step 4: Prove the guard can fail**
+- [ ] **Step 4: Prove the guard can fail — and prove it covers an extensionless file**
 
-A guard that has never failed is not known to work. Temporarily prepend a BOM to a tracked file and confirm the test catches it:
+A guard that has never failed is not known to work, and a guard that was just rewritten to drop its extension filter is not known to still work unless the case that motivated dropping the filter is exercised directly. Two checks, not one:
 
 ```bash
+# 4a: a BOM in an ordinary .py file (would have been caught even before this fix)
 python -c "
 from pathlib import Path
 p = Path('tests/aqa/__init__.py'); b = p.read_bytes()
@@ -1219,6 +1375,18 @@ p.write_bytes(b'\xef\xbb\xbf' + b)
 python -m pytest tests/regression/test_evidence_portability.py -k bom -v
 # Expected: FAIL, naming tests/aqa/__init__.py
 git checkout -- tests/aqa/__init__.py
+
+# 4b: a BOM in Makefile -- extensionless, the case an extension-filtered
+# version of this guard would have missed entirely
+python -c "
+from pathlib import Path
+p = Path('Makefile'); b = p.read_bytes()
+p.write_bytes(b'\xef\xbb\xbf' + b)
+"
+python -m pytest tests/regression/test_evidence_portability.py -k bom -v
+# Expected: FAIL, naming Makefile
+git checkout -- Makefile
+
 python -m pytest tests/regression/test_evidence_portability.py -k bom -v
 # Expected: PASS
 git status --short   # Expected: no unintended modifications
@@ -1232,7 +1400,11 @@ git commit -m "test(regression): guard against UTF-8 BOMs in tracked files (D-07
 
 a4d3f22 removed the BOM from tests/integration/test_mcp_integration.py
 but nothing stopped it coming back, there or anywhere. Discovered via
-git ls-files so a new file type is covered without editing a list.
+git ls-files with no pathspec, not an extension whitelist -- an earlier
+draft filtered to *.py/*.md/etc, which would have missed a BOM in
+Makefile or .github/CODEOWNERS, both tracked and both extensionless.
+Verified by proving the guard fails on both an ordinary .py file and
+on Makefile before restoring both.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
@@ -1308,7 +1480,10 @@ Add at the top of the `Unreleased` section (match the file's existing heading st
   endpoint, an unknown provider or a missing credential all reported success
   and `make probe` was green for a bake-off that contacted no model. The
   contract is now: `0` usable run with no laundering, `1` at least one row
-  laundered, `2` no row reached a model. A partial run still exits 0.
+  laundered, `2` no row reached a model. A partial run still exits 0. Two
+  existing tests asserted the old contract by design (their own messages:
+  "an ERROR row is not a laundered failure, so the exit code stays 0") and
+  are updated to the new one.
 - **Promotion refuses a capture in which no model answered (D-04).**
   `promote_trace.py` gated only on the credential scan, so `traces/` could
   hold, and `evidence/02-bakeoff.md` could cite, a run where every slot
@@ -1394,3 +1569,5 @@ PR body should state: the four defects with their RCA one-liners, which lanes we
 **3. Type and name consistency.** `live_llm_endpoint`/`run_probe`/`read_summary` are defined in Task 1 Step 3 and used with matching signatures in Tasks 2, 3 and 5. `promote(source, name, destination_root, allow_error_run)` is defined in Task 4 Step 3 and called with that keyword in Task 4 Step 1 and Task 5 Step 2. `_rel(Path) -> str` keeps its signature in Task 3. `ERROR` and `LAUNDERED` are imported from `probe.screen` in Task 2 Step 3, which is where they live. Exit codes 0/1/2 are consistent across Task 2, Task 5's `assert code in (0, 1)`, and the CHANGELOG.
 
 **4. One tension worth flagging to the executor.** Task 2's `all(row["screen"] == ERROR ...)` and Task 4's `all(row.get("status") == "ERROR" ...)` read different keys. That is correct rather than sloppy — `screen` is the CLI's in-memory row shape and `status` is what `summary.json` persists — but they are the same concept in two vocabularies, and if either shape changes both must move together. The tests in Tasks 2 and 4 pin each independently.
+
+**5. This was not a single self-review — it went through two more passes before this version.** A parallel dispatch of four agents (Explore for fact-checking, `feature-dev:code-reviewer` for logic, `security-auditor` for credential handling, `test-runner` for actually running the code) reviewed the first draft; three finished and one couldn't start (a stale worktree from an unrelated session blocked the isolation mechanism), so its job — apply every task's code for real and run the full lane gauntlet — was done by hand in a disposable `git clone --local`, task by task, exactly as Task 1 through Task 7 are now written. That direct execution is what found the one thing no static review could have: two *existing* tests (`tests/test_cli_entrypoints.py:227`, `tests/test_verifier_screen.py:319`) asserted the pre-fix exit-code contract as deliberate, documented behavior, and only broke when the suite was actually run after Task 2's change landed. Every other finding — the `E402` import-ordering trap in Tasks 4 and 6's original "append" instructions, the BOM guard's extension-whitelist blind spot for `Makefile`/`.github/CODEOWNERS`, the credential-echo risk in Task 5's original assertion message, and the missing Makefile anchor text in Task 7 (now Task 5 Step 6) — is folded into the task text above, not listed separately here, because an executor following the tasks in order never needs to know a defect once had a different, wrong shape. What's provable and was proven: every code block quoted in this plan was applied verbatim in that clone, in task order, with `ruff check .`, `mypy`, and all four lanes run after each task, ending clean (ruff clean, mypy clean, lane A/B green, lane C green, lane D skipping with the two distinct proof-of-gating reasons, coverage 93%, secret scan 0 hits) before this rewrite was made final.
