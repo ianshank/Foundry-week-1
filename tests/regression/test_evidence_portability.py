@@ -12,6 +12,7 @@ Three defects share this file because they share a failure surface: a
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -134,3 +135,47 @@ def test_unwritable_out_directory_is_an_argparse_error_not_a_traceback(
         probe_main(["--models", "ollama:m", "--out", str(blocker)])
 
     assert excinfo.value.code == 2  # argparse's usage-error code
+
+
+_BOM = b"\xef\xbb\xbf"
+
+
+def test_no_tracked_text_file_starts_with_a_utf8_bom() -> None:
+    """D-07: a BOM at byte 0 of a Python file breaks tools that read bytes.
+
+    `tests/integration/test_mcp_integration.py` carried one and it was removed
+    in a4d3f22. Nothing stopped the next editor putting one back, in that file
+    or any other -- Windows editors add them silently.
+
+    Discovered via `git ls-files` with **no pathspec** -- not filtered to
+    `*.py`/`*.md`/etc. -- because an extension whitelist is exactly the kind
+    of hand-maintained list this guard exists to avoid, and this repository
+    already tracks extensionless files an extension filter would silently
+    skip: `Makefile` and `.github/CODEOWNERS` both matched no pattern in an
+    earlier draft of this test, which would have made a BOM in either of them
+    invisible to a guard whose whole stated purpose is repo-wide coverage.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    listed = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=repo_root, capture_output=True, check=True,
+    )
+    paths = [p for p in listed.stdout.decode("utf-8").split("\0") if p]
+    assert paths, "git ls-files matched nothing -- discovery is broken, not the repo clean"
+
+    offenders = []
+    for rel in paths:
+        full = repo_root / rel
+        if not full.is_file():
+            continue
+        try:
+            head = full.read_bytes()[:3]
+        except OSError:
+            continue
+        if head == _BOM:
+            offenders.append(rel)
+
+    assert not offenders, (
+        "These tracked files start with a UTF-8 BOM: " + ", ".join(sorted(offenders)) +
+        ". Re-save them as UTF-8 without a signature."
+    )
