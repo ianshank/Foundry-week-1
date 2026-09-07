@@ -78,7 +78,13 @@ def main(argv: list[str] | None = None, call_model_fn: Any = None) -> int:
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = args.out / f"{stamp}-{args.prompt.stem}"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        # Every other bad argument in this function reports through
+        # parser.error. An unwritable --out reported through a traceback, so
+        # one input was validated differently from the rest for no reason.
+        parser.error(f"cannot create output directory {out_dir}: {error}")
 
     sampling = {
         "temperature": args.temperature,
