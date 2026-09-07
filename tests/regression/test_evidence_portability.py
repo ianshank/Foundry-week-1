@@ -11,6 +11,7 @@ Three defects share this file because they share a failure surface: a
 
 from __future__ import annotations
 
+import codecs
 import json
 import subprocess
 from pathlib import Path
@@ -137,11 +138,30 @@ def test_unwritable_out_directory_is_an_argparse_error_not_a_traceback(
     assert excinfo.value.code == 2  # argparse's usage-error code
 
 
-_BOM = b"\xef\xbb\xbf"
+#: Every byte-order mark a text editor can leave at byte 0, longest first.
+#:
+#: This guard compared `BOM_UTF8` alone for two merges, which meant the one
+#: tracked file in this repository that actually carried a BOM --
+#: `requirements.txt`, a Windows `pip freeze` written in UTF-16LE -- walked
+#: straight past a check whose entire purpose was to catch it. A guard that
+#: enumerates one member of a family and calls itself repo-wide is the same
+#: shape of defect as the extension whitelist this test's docstring already
+#: warns about, one level further in.
+#:
+#: Longest-first matters for the *message*, not the match: `BOM_UTF32_LE`
+#: begins with `BOM_UTF16_LE`, so a shortest-first scan would report every
+#: UTF-32LE file as UTF-16LE and send the reader to the wrong encoding.
+_BOMS: tuple[tuple[str, bytes], ...] = (
+    ("UTF-32LE", codecs.BOM_UTF32_LE),
+    ("UTF-32BE", codecs.BOM_UTF32_BE),
+    ("UTF-8", codecs.BOM_UTF8),
+    ("UTF-16LE", codecs.BOM_UTF16_LE),
+    ("UTF-16BE", codecs.BOM_UTF16_BE),
+)
 
 
-def test_no_tracked_text_file_starts_with_a_utf8_bom() -> None:
-    """D-07: a BOM at byte 0 of a Python file breaks tools that read bytes.
+def test_no_tracked_text_file_starts_with_any_byte_order_mark() -> None:
+    """D-07: a BOM at byte 0 breaks tools that read bytes.
 
     `tests/integration/test_mcp_integration.py` carried one and it was removed
     in a4d3f22. Nothing stopped the next editor putting one back, in that file
@@ -154,6 +174,9 @@ def test_no_tracked_text_file_starts_with_a_utf8_bom() -> None:
     skip: `Makefile` and `.github/CODEOWNERS` both matched no pattern in an
     earlier draft of this test, which would have made a BOM in either of them
     invisible to a guard whose whole stated purpose is repo-wide coverage.
+
+    It checks every BOM rather than UTF-8's alone for the same reason, and
+    that widening is what first caught `requirements.txt`.
     """
     repo_root = Path(__file__).resolve().parents[2]
     listed = subprocess.run(
@@ -169,13 +192,15 @@ def test_no_tracked_text_file_starts_with_a_utf8_bom() -> None:
         if not full.is_file():
             continue
         try:
-            head = full.read_bytes()[:3]
+            head = full.read_bytes()[:4]
         except OSError:
             continue
-        if head == _BOM:
-            offenders.append(rel)
+        for label, bom in _BOMS:
+            if head.startswith(bom):
+                offenders.append(f"{rel} ({label})")
+                break
 
     assert not offenders, (
-        "These tracked files start with a UTF-8 BOM: " + ", ".join(sorted(offenders)) +
+        "These tracked files start with a byte-order mark: " + ", ".join(sorted(offenders)) +
         ". Re-save them as UTF-8 without a signature."
     )
