@@ -25,7 +25,7 @@ SHELL_SCRIPTS := $(shell ls .githooks/* 2>/dev/null) \
 .PHONY: help setup hooks baseline test regression lint typecheck scan secrets \
         validate coverage selfcheck serve probe probe-blocked promote verdict \
         test-unit test-integration test-functional test-e2e test-journey \
-        test-security test-sanity test-regression aqa test-7layers \
+        test-security test-sanity test-regression aqa test-live test-7layers \
         shellcheck docker-test docker-transport docker-lint clean
 
 help: ## Show this help
@@ -102,6 +102,9 @@ test-regression: ## Regression guard layer: fixed-defect guards (D-01/D-02, F4, 
 
 aqa: ## AQA acceptance layer: tests marked with @pytest.mark.aqa
 	$(PYTEST) -m aqa -v
+
+test-live: ## Lane D: contact a real vendor LLM (opt-in: PROBE_LIVE=1 PROBE_MODELS=...)
+	PROBE_LIVE=$${PROBE_LIVE:-1} $(PYTEST) -m live_llm -v -rs
 
 test-7layers: test-unit test-integration test-functional test-e2e test-journey test-security test-sanity test-regression ## All 7 layers + regression guard in one shot
 
