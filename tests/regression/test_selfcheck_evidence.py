@@ -193,3 +193,53 @@ def test_every_in_repo_target_the_selfcheck_cites_still_exists() -> None:
         "the capture cites in-repo targets that do not exist, so the run it "
         "records cannot be reproduced or reviewed: " + ", ".join(missing)
     )
+
+
+def test_no_recorded_target_anywhere_leaks_an_absolute_in_repo_path() -> None:
+    """Both `target` fields, not just the one the eye lands on.
+
+    Raised in review of PR #13. `_portable_target` was applied to the
+    case-level `target` and not to the copy inside the nested `result`
+    envelope, so the tracked artifact still carried
+    `E:\\Coding_Projects\foundry_week1\\configs\\...` -- native separators and
+    the operator's directory layout, which is the D-05 class of defect this was
+    meant to close, and guaranteed diff churn between machines.
+
+    Walks every `target` at any depth rather than naming the two known ones, so
+    a third copy added later is covered without this test being edited. That
+    paid off immediately: there were three, not two -- planlint's own findings
+    payload carries one as well.
+
+    Scoped to keys named `target`, and `command` is excluded on purpose. That
+    array is the argv that actually ran, and a record of an execution has to
+    say what was executed; a `target` is a reference to a location, which the
+    repo-relative spelling names more portably. Rewriting the first to tidy the
+    second would be falsifying evidence to make a diff cleaner, which is the
+    trade this repository exists to refuse.
+    """
+    report = json.loads(_EVIDENCE.read_text(encoding="utf-8"))
+    marker = f"/{_REPO.name.lower()}/"
+
+    def _targets(node: object, path: str = "") -> list[tuple[str, str]]:
+        found: list[tuple[str, str]] = []
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "target" and isinstance(value, str):
+                    found.append((f"{path}.{key}".lstrip("."), value))
+                else:
+                    found.extend(_targets(value, f"{path}.{key}".lstrip(".")))
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                found.extend(_targets(item, f"{path}[{index}]"))
+        return found
+
+    offenders = [
+        f"{where} = {value}"
+        for where, value in _targets(report)
+        if marker in value.replace("\\", "/").lower()
+    ]
+
+    assert not offenders, (
+        "these recorded targets are absolute paths inside this repository; a "
+        "real run records those relative:\n  " + "\n  ".join(offenders)
+    )

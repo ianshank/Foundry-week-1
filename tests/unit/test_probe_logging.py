@@ -73,3 +73,39 @@ def test_a_record_survives_when_the_package_is_unavailable(monkeypatch: pytest.M
     logger = mod.get_logger("fallback-check")
 
     assert logger.handlers or logger.parent, "the fallback produced a logger that goes nowhere"
+
+
+def test_the_fallback_logger_does_not_propagate_to_an_unknown_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback installs its own stderr handler, so propagation is a leak.
+
+    Raised in review of PR #13. `get_logger`'s fallback added a stderr handler
+    and left `propagate` at its default `True`, so any handler higher in the
+    chain -- including a root handler pointed at **stdout**, which
+    `logging.basicConfig()` installs by default -- would also receive every
+    probe record. That weakens the one invariant this module exists to hold,
+    and duplicates every line when a root handler happens to exist.
+
+    The shared path does not need this: `foundry_spike_mcp.logging_setup`
+    already owns its own propagation. Only the fallback, which is the arm that
+    runs where the package is absent, has to defend itself.
+    """
+    import logging as _logging
+
+    import probe.logging_setup as mod
+
+    monkeypatch.setattr(mod, "_SHARED", False)
+
+    # A root handler aimed at stdout is exactly what basicConfig() leaves behind.
+    root = _logging.getLogger()
+    sentinel = _logging.StreamHandler(stream=__import__("sys").stdout)
+    root.addHandler(sentinel)
+    try:
+        logger = mod.get_logger("propagation-check")
+        assert not logger.propagate, (
+            "the fallback logger propagates, so a root stdout handler receives "
+            "probe records and the stderr-only invariant is not held"
+        )
+    finally:
+        root.removeHandler(sentinel)
