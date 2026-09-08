@@ -167,6 +167,57 @@ def test_selfcheck_reports_skipped_cases_rather_than_pretending_they_passed(
     assert report["all_expected"] is False
 
 
+def test_selfcheck_records_why_it_could_not_load_a_config_rather_than_hiding_it(
+    monkeypatch, tmp_path, fake_planlint, capsys
+):
+    """`report["config_error"]` is the field an operator reads to find out why
+    the server will not work, and no test had ever seen it populated.
+
+    `_selfcheck` catches `ConfigError` -- narrowed from a bare `ValueError`,
+    which was one refactor away from swallowing an unrelated error and
+    reporting a misconfigured run as a clean one -- and records the reason
+    instead of discarding it. Both halves matter and neither was checked: that
+    the field appears and says something, and that the run still produces three
+    cases with a non-zero exit rather than crashing.
+
+    A self-check that hides why it fell back is the failure mode this file
+    exists to detect, wearing the costume of the tool that detects it.
+    """
+    _selfcheck_env(monkeypatch, tmp_path, fake_planlint)
+    monkeypatch.setenv("PLANLINT_ALLOWED_ROOTS", "relative/not/absolute")
+
+    exit_code = spike_main.main(["selfcheck"])
+    report = json.loads(capsys.readouterr().out)
+
+    assert report.get("config_error"), (
+        "the config failed to load and the report says nothing about it"
+    )
+    assert "relative" in report["config_error"] or "absolute" in report["config_error"], (
+        f"the recorded reason does not name the problem: {report['config_error']!r}"
+    )
+    assert [case["case"] for case in report["cases"]] == ["pass", "findings", "blocked"], (
+        "a bad config must not silently shorten the report"
+    )
+    assert exit_code != 0, "a self-check that could not load its config is not a pass"
+
+
+def test_selfcheck_omits_config_error_entirely_when_the_config_loads(
+    monkeypatch, tmp_path, fake_planlint, capsys
+):
+    """The falsifier for the test above.
+
+    Without this, the assertion `report.get("config_error")` would be satisfied
+    by a field that is always present -- and a permanently-populated
+    "something went wrong" field says nothing at all.
+    """
+    _selfcheck_env(monkeypatch, tmp_path, fake_planlint)
+
+    assert spike_main.main(["selfcheck"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert "config_error" not in report
+
+
 def test_selfcheck_writes_the_evidence_file(monkeypatch, tmp_path, fake_planlint, capsys):
     _selfcheck_env(monkeypatch, tmp_path, fake_planlint)
     out = tmp_path / "evidence" / "03-mcp-selfcheck.json"

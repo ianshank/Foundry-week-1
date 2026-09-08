@@ -54,14 +54,13 @@ from .verdicts import (
     BLOCKED_CONFIG_ERROR,
     BLOCKED_GUARD_REJECTED,
     BLOCKED_NOTE,
+    BLOCKED_PROCESS_ERROR,
     BLOCKED_TIMEOUT,
     BLOCKED_TOOL_NOT_FOUND,
     FINDINGS,
     FINDINGS_NOTE,
     verdict_for_exit_code,
 )
-
-BLOCKED_PROCESS_ERROR = "process_error"
 
 #: Keys present on every result, so callers never have to probe for existence.
 #: Order is the order a human reads them in a trace: verdict first.

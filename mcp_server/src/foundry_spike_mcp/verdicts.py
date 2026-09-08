@@ -44,6 +44,14 @@ BLOCKED_NO_SCORED_RESULTS = "no_scored_results"
 #: `planlint` and `scoring`, which is how the one reason not defined here
 #: became the one that could drift between the two tools.
 BLOCKED_CONFIG_ERROR = "configuration_error"
+#: The operating system refused to start or read from the child process --
+#: permission denied, ENOEXEC, a fork failure, a read that died mid-stream.
+#:
+#: Moved here from `planlint.py`, where it was the next instance of exactly the
+#: pattern the comment above describes: the one blocked reason not defined in
+#: this file. `planlint.BLOCKED_PROCESS_ERROR` still resolves, because
+#: `planlint` imports it from here.
+BLOCKED_PROCESS_ERROR = "process_error"
 
 BLOCKED_NOTE = (
     "BLOCKED means the run could not form an opinion. It is not a spec failure "
