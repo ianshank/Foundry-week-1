@@ -344,8 +344,23 @@ def test_settings_permission_entries_are_well_formed():
                 malformed.append(f"{bucket}: {entry!r}")
                 continue
             # The harness form is `Tool(pattern)` or a bare tool name.
-            if "(" in entry and not entry.rstrip().endswith(")"):
+            stripped = entry.strip()
+            if "(" not in stripped:
+                continue
+            if not stripped.endswith(")"):
                 malformed.append(f"{bucket}: {entry!r} has an unclosed pattern")
+                continue
+            tool, _, rest = stripped.partition("(")
+            if not tool.strip():
+                malformed.append(f"{bucket}: {entry!r} names no tool")
+            # An empty pattern is the dangerous case and the check missed it,
+            # which review of PR #13 caught: the docstring above promised a
+            # non-empty pattern and only unclosed parentheses were rejected.
+            # `Bash()` parses, matches nothing useful in a deny rule, and in an
+            # allow rule reads as "this tool, unrestricted" -- silently
+            # broadening exactly the thing this file exists to pin down.
+            if not rest[:-1].strip():
+                malformed.append(f"{bucket}: {entry!r} has an empty pattern")
 
     assert not malformed, "malformed permission entries never match anything: " + ", ".join(malformed)
 

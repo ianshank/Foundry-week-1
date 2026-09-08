@@ -63,6 +63,35 @@ def _portable_target(target: str) -> str:
 
 
 
+def _portable_targets(node: Any) -> Any:
+    """Rewrite every `target` value in a nested structure, at any depth.
+
+    Raised in review of PR #13: normalising only the case-level `target` left
+    the absolute machine path in the file anyway, because the nested `result`
+    envelope carries its own -- and planlint's own findings payload carries a
+    third. Naming the known copies is how the third one gets missed, so this
+    walks.
+
+    `command` is deliberately NOT rewritten. It is the argv that actually ran,
+    and a record of an execution has to say what was executed; a `target` is a
+    *reference to a location*, and the repo-relative spelling names the same
+    location more portably. Falsifying the first to tidy the second would be
+    the trade this repository exists to refuse. The binary path in `command[0]`
+    is also genuinely external and genuinely evidence -- which planlint build
+    produced the verdict is the interesting part.
+    """
+    if isinstance(node, dict):
+        return {
+            key: _portable_target(value)
+            if key == "target" and isinstance(value, str)
+            else _portable_targets(value)
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_portable_targets(item) for item in node]
+    return node
+
+
 def _selfcheck(output: Path | None) -> int:
     """Exercise all three verdicts and report whether each landed correctly.
 
@@ -136,6 +165,13 @@ def _selfcheck(output: Path | None) -> int:
         result = lint_openspec(target=target, config=config)
         matched = result["verdict"] == expected
         report["all_expected"] = report["all_expected"] and matched
+        # The nested envelope carries its own `target`, and normalising only
+        # the case-level one left the absolute machine path in the file anyway
+        # -- raised in review of PR #13, and correct: the artifact is tracked,
+        # so it kept leaking the operator's directory layout and churning the
+        # diff on every machine. A copy, because `result` is the tool's own
+        # return value and this function has no business mutating it.
+        result = _portable_targets(result)
         report["cases"].append(
             {
                 "case": name,

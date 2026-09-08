@@ -56,6 +56,14 @@ def get_logger(suffix: str) -> logging.Logger:
         handler = logging.StreamHandler(stream=sys.stderr)
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
         logger.addHandler(handler)
+        # Stop here. This arm has just installed the handler it wants, so
+        # propagating additionally hands every record to whatever sits above --
+        # and `logging.basicConfig()`, which any dependency may have called,
+        # installs a root handler pointed at **stdout**. That would both break
+        # the stderr-only invariant this module exists to hold and duplicate
+        # every line. The shared path does not need this; it owns its own
+        # propagation.
+        logger.propagate = False
     return logger
 
 
