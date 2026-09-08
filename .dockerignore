@@ -8,7 +8,19 @@
 .env
 .env.local
 *.token
-mcp_server/mcp.json
+# Name-matched, not path-matched, for the reason `.gitignore` records: this
+# rule named `mcp/mcp.json` until that directory was renamed `mcp_server/`,
+# after which it silently protected nothing. RUNBOOK.md tells the operator
+# this file will hold real paths and possibly a token, and a token that
+# reaches a build context is recoverable from the image layers forever.
+mcp.json
+**/mcp.json
+
+# A subagent worktree is a full shadow copy of the tree -- its own settings,
+# its own skills, its own pyproject.toml with a different coverage floor. It
+# has no business in a build context, and a scan inside the image would be
+# walking two copies of the repository.
+.claude/worktrees/
 
 # Unscanned captures. Promoted traces under traces/<name>/ have passed the
 # secret gate and are fine; traces/raw/ has not.

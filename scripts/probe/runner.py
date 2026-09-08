@@ -11,7 +11,10 @@ from typing import Any
 
 from .client import call_model
 from .config import REPO
+from .logging_setup import get_logger
 from .screen import ERROR, OK, screen
+
+_log = get_logger("runner")
 
 
 def _rel(path: Path) -> str:
@@ -90,7 +93,31 @@ def run_probe_cells(
             row = {"slot": slot, **response, **screen(response["text"], expect)}
         rows.append(row)
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", slot)
-        (out_dir / f"{safe}.json").write_text(json.dumps(row, indent=2), encoding="utf-8")
+        try:
+            (out_dir / f"{safe}.json").write_text(json.dumps(row, indent=2), encoding="utf-8")
+        except OSError as error:
+            # The model has already been called and the tokens already spent,
+            # so losing the run because the transcript could not be written is
+            # the most expensive possible failure. The row is in memory and
+            # still belongs in `summary.json`; record that its transcript is
+            # missing and carry on. `cli.py` applies the same reasoning to
+            # `--out` one function earlier, and it was not carried through
+            # here.
+            row["transcript_error"] = str(error)
+            _log.warning(
+                "transcript could not be written",
+                extra={"slot": slot, "error": str(error)},
+            )
+        _log.info(
+            "probe cell complete",
+            extra={
+                "slot": slot,
+                "screen": row["screen"],
+                "basis": row.get("basis"),
+                "error": row.get("error"),
+                "duration_ms": row.get("latency_ms"),
+            },
+        )
         print(f"   {row['screen']}  ({row.get('basis', row.get('error', ''))})", file=sys.stderr)
     return rows
 

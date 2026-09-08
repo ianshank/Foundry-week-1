@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from promote_trace import PromotionRefused
 from scan_evidence import main, scan_file
 
 pytestmark = pytest.mark.regression
@@ -134,3 +135,27 @@ def test_a_rooted_absolute_target_is_not_grafted_onto_the_repo_drive(
     out = capsys.readouterr().out
     assert code == 2
     assert "Coding_Projects" not in out, f"target was grafted onto the repo drive: {out}"
+
+
+def test_a_skip_name_in_an_ancestor_directory_does_not_skip_the_scan(tmp_path: Path) -> None:
+    """S-04: `SKIP_NAMES` was matched against the absolute path.
+
+    `promote` skipped any file whose *absolute* path contained a component in
+    `SKIP_NAMES`, so a capture whose ancestor directory happened to be named
+    `__pycache__` had every file skipped by the credential scan -- while
+    `shutil.copytree`'s `ignore_patterns` matches per-directory basenames and
+    copied them anyway. Reproduced: an unscanned `ghp_` token was promoted into
+    the tracked destination and the tool printed success.
+
+    The comparison must be scoped to the capture, which is the only part of the
+    path the capture controls.
+    """
+    from promote_trace import promote
+
+    base = tmp_path / "__pycache__" / "out"
+    capture = base / "run1"
+    capture.mkdir(parents=True)
+    (capture / "transcript.txt").write_text("token ghp_" + "D" * 36 + "\n", encoding="utf-8")
+
+    with pytest.raises(PromotionRefused, match="secret scan"):
+        promote(capture, destination_root=tmp_path / "traces")
