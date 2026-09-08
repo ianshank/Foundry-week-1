@@ -15,8 +15,22 @@ dependencies = [
 [project.optional-dependencies]
 # The tool contract is tested without the MCP SDK on purpose: `planlint` and
 # `scoring` import nothing from it, so a transport change cannot alter a verdict.
+#
+# Everything `make validate` runs belongs here. It previously held pytest
+# alone, so `make setup && make validate` was red on a fresh clone at the first
+# of three steps -- CI installs the linters separately and never noticed. The
+# floor for a contributor and the floor for CI should be the same floor.
 dev = [
     "pytest>=8.0",
+    "coverage>=7.0",
+    # Pinned, not floated. `ruff>=0.6` spans two years of rule and
+    # glob-matching changes, and two versions (0.16.5, 0.16.6) were
+    # observed linting this tree in one session -- which makes the
+    # pre-edit hook's findings irreproducible. Same argument as the
+    # `mcp>=1.2,<3` ceiling above: the tool that gates every commit
+    # should not change under you.
+    "ruff~=0.16.6",
+    "mypy>=1.11",
 ]
 
 [project.scripts]

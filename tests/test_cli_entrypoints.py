@@ -37,9 +37,9 @@ def fake_planlint(tmp_path: Path) -> Path:
     """A stand-in planlint: exit 2 with no openspec/ tree, 1 for a 'find'
     target, 0 otherwise. Mirrors the real three-way contract."""
     script = tmp_path / "bin" / "planlint"
-    script.parent.mkdir(parents=True)
-    script.write_text(
-        "#!/usr/bin/env python3\n"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    py_script = tmp_path / "bin" / "planlint.py"
+    py_script.write_text(
         "import json, os, sys\n"
         "target = sys.argv[sys.argv.index('--target') + 1]\n"
         "if not os.path.isdir(os.path.join(target, 'openspec')):\n"
@@ -51,6 +51,11 @@ def fake_planlint(tmp_path: Path) -> Path:
         "print(json.dumps({'findings': []})); sys.exit(0)\n",
         encoding="utf-8",
     )
+    if sys.platform == "win32":
+        bat_script = tmp_path / "bin" / "planlint.bat"
+        bat_script.write_text(f'@"{sys.executable}" "{py_script}" %*')
+        return bat_script
+    script.write_text(f"#!/usr/bin/env {sys.executable}\n" + py_script.read_text(), encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return script
 
@@ -66,6 +71,59 @@ def _selfcheck_env(monkeypatch, tmp_path: Path, binary: Path) -> None:
     monkeypatch.setenv("SELFCHECK_PASS_TARGET", str(tmp_path / "pass"))
     monkeypatch.setenv("SELFCHECK_FINDINGS_TARGET", str(tmp_path / "find"))
     monkeypatch.delenv("SELFCHECK_BLOCKED_TARGET", raising=False)
+
+
+@pytest.mark.regression
+def test_a_blocked_target_that_resolves_differently_still_reaches_planlint(
+    monkeypatch, tmp_path, fake_planlint, capsys
+):
+    """The blocked case must be blocked by planlint, not by the allow list.
+
+    CI's `contract (windows-latest)` leg failed on main and on this branch with
+    `('BLOCKED', None)` where `('BLOCKED', 2)` was expected. The verdict was
+    right and the reason was wrong, which is the harder kind of wrong: exit
+    code `None` means nothing ever ran, so the case reported BLOCKED because
+    the allow list refused it rather than because planlint hit a precondition
+    error and exited 2. The self-check exists to prove exit 2 survives the
+    wrapper; it was proving that a guard works instead.
+
+    Cause: `check_target` resolves the target and then tests containment
+    against the roots exactly as supplied, and `_selfcheck` added its scratch
+    directory to those roots unresolved. A GitHub Windows runner's TEMP is an
+    8.3 short path that `resolve()` expands, so the root never contained its
+    own target. It passed on every machine whose temp path has no short-name
+    form, which is how it reached main.
+
+    Reproduced without needing an 8.3 path: any spelling whose resolved form
+    differs from its literal one -- `scratch/../scratch` -- does it on every
+    platform, which is what makes this a guard rather than a Windows-only note.
+    """
+    # The scratch directory must sit OUTSIDE the configured allow list, the way
+    # a real temp dir does. If it sits inside, the configured root already
+    # covers it and the appended one is never load-bearing -- which is how an
+    # earlier version of this test passed with the defect still present.
+    allowed = tmp_path / "allowed"
+    for name in ("pass", "find"):
+        (allowed / name / "openspec").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    monkeypatch.setenv("PLANLINT_BIN", str(fake_planlint))
+    monkeypatch.setenv("PLANLINT_ALLOWED_ROOTS", str(allowed))
+    monkeypatch.setenv("SELFCHECK_PASS_TARGET", str(allowed / "pass"))
+    monkeypatch.setenv("SELFCHECK_FINDINGS_TARGET", str(allowed / "find"))
+    monkeypatch.setenv("SELFCHECK_BLOCKED_TARGET", str(scratch / ".." / "scratch"))
+
+    spike_main.main(["selfcheck"])
+
+    report = json.loads(capsys.readouterr().out)
+    blocked = next(case for case in report["cases"] if case["case"] == "blocked")
+
+    assert blocked["exit_code"] == 2, (
+        "the blocked case was refused by the allow list rather than by planlint; "
+        f"exit_code={blocked['exit_code']!r} means the binary never ran"
+    )
+    assert blocked["actual_verdict"] == "BLOCKED"
 
 
 def test_selfcheck_exercises_all_three_verdicts_and_exits_zero(
@@ -155,10 +213,36 @@ def test_scan_main_exits_nonzero_and_names_the_file_on_a_hit(tmp_path, monkeypat
 
 
 def test_scan_main_skips_a_missing_directory_without_failing(tmp_path, monkeypatch, capsys):
-    """A capture directory that does not exist yet is normal in session 1."""
+    """A capture directory that does not exist yet is normal in session 1.
+
+    That concern is real and is preserved by the test below: when *some*
+    target has files, a missing sibling does not fail the run, which is the
+    session-1 case (`traces/` absent while `evidence/` already has content).
+
+    What changed is the case where nothing at all was opened. Skipping is
+    still not a traceback, but it is also no longer a pass -- exit 2 means
+    "could not look", as distinct from 1, "looked and found a credential".
+    """
     monkeypatch.setattr(scan_evidence, "REPO", tmp_path)
-    assert scan_evidence.main(["nope"]) == 0
+    assert scan_evidence.main(["nope"]) == 2
     assert "skip" in capsys.readouterr().out
+
+
+def test_scan_main_passes_when_one_target_is_missing_but_another_has_files(
+    tmp_path, monkeypatch, capsys
+):
+    """The session-1 case the test above used to cover, stated directly.
+
+    `make scan` passes five default targets and early sessions have only some
+    of them. A missing `traces/` must not fail a run that actually scanned
+    `evidence/` -- the exit-2 path is for having opened nothing at all.
+    """
+    monkeypatch.setattr(scan_evidence, "REPO", tmp_path)
+    (tmp_path / "evidence").mkdir()
+    (tmp_path / "evidence" / "notes.md").write_text("clean\n", encoding="utf-8")
+
+    assert scan_evidence.main(["evidence", "traces"]) == 0
+    assert "scanned 1 file(s), 0 hit(s)" in capsys.readouterr().out
 
 
 # ------------------------------------------------------------ promote_trace
@@ -219,7 +303,7 @@ def test_probe_main_writes_transcripts_and_a_summary_even_when_calls_fail(
         ]
     )
     capsys.readouterr()
-    assert code == 0, "an ERROR row is not a laundered failure, so the exit code stays 0"
+    assert code == 2, "the only row is ERROR, so no model was ever reached"
     summaries = list(out.rglob("summary.json"))
     assert len(summaries) == 1
     summary = json.loads(summaries[0].read_text())

@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "E:\Coding_Projects\foundry_week1\.venv\Scripts\eval-harness.exe\__main__.py", line 7, in <module>
+  File "E:\Working+Directory\Agents\src\eval_harness\cli.py", line 174, in main
+    return _cmd_run(args)
+           ^^^^^^^^^^^^^^
+  File "E:\Working+Directory\Agents\src\eval_harness\cli.py", line 84, in _cmd_run
+    require_calibration_for_judge_gating(config, engine.scorers)
+  File "E:\Working+Directory\Agents\src\eval_harness\gating\__init__.py", line 36, in require_calibration_for_judge_gating
+    raise ValueError(
+ValueError: judge_calibration.calibration_artifact_id is required to gate on ['helpfulness']: a judge's participation in gating must be traceable to the calibration run that authorised it

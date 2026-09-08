@@ -55,8 +55,19 @@ ignore = [
 # The selfcheck CLI prints to stdout on purpose; it is not the server.
 "**/__main__.py" = ["T201"]
 
+[tool.pyright]
+extraPaths = ["mcp_server/src", "scripts", "."]
+
 [tool.mypy]
 python_version = "3.10"
+# Deliberately does *not* include `scripts`, though `pytest.ini`'s
+# `pythonpath` does. Adding it makes `scripts/scan_evidence.py` reachable as
+# both `scan_evidence` and `scripts.scan_evidence`, which mypy rejects as a
+# duplicate module. Scripts that import each other therefore spell it
+# `scripts.<module>`, with a bare fallback for the runtime paths where only
+# `scripts/` is on `sys.path`.
+mypy_path = ["mcp_server/src", "."]
+explicit_package_bases = true
 files = ["mcp_server/src", "scripts"]
 # Not `strict`, and the gap is small enough to state exactly: `mypy --strict`
 # reports 3 errors, all defensible --
@@ -76,12 +87,12 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = true
 show_error_codes = true
 
-[[tool.mypy.overrides]]
-# The SDK is an optional dependency resolved at runtime by
-# `server._load_server_class`, so it may legitimately be absent when mypy runs.
-module = ["mcp.*"]
-ignore_missing_imports = true
-
+# No `[[tool.mypy.overrides]]` for `mcp.*`. There was one, and it emitted
+# "unused section" on every run: `server._load_server_class` resolves the SDK
+# through `importlib` string names, so mypy never sees an `mcp` import to
+# silence. A permanent warning that trains people to ignore warnings is worse
+# than the missing-stub error it was pre-empting. Restore it the day something
+# imports the SDK statically.
 
 [tool.coverage.run]
 source = ["mcp_server/src", "scripts"]
@@ -94,7 +105,7 @@ show_missing = true
 # not blocked by a percentage point, and high enough that deleting a test file
 # fails the build. Coverage measures which lines ran, never whether the
 # assertion was worth making -- the contract tests are what do that.
-fail_under = 85
+fail_under = 90
 exclude_also = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",

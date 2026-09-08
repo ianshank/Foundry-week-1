@@ -209,6 +209,11 @@ the walk. An unrecognised artifact returns BLOCKED, never an empty pass.
 - Subprocess timeout, and timeout maps to `BLOCKED`, never to `FINDINGS`.
 - Truncate stderr; `make scan` runs the secret pass over anything bound for
   export, reusing the same pattern list the tools redact with.
+- Bound and redact the *evidence*, not only the verdict. planlint's stdout is
+  size-checked before it is parsed and redacted after — keys as well as values —
+  so a credential inside valid JSON does not reach the model. Neither step can
+  change the verdict: `findings_truncated` and `findings_parse_error` say what
+  was lost, and the exit code still decides.
 
 **[amended]** The model never supplies argv. `lint_openspec` takes two
 validated scalars (`target`, `fail_on`) and builds the command line itself, so
@@ -228,7 +233,7 @@ real paths and possibly a token.)
 for a PASS case, a FINDINGS case, and a deliberately BLOCKED case.
 
 ```bash
-make validate    # ruff, mypy, the full suite, the secret pass
+make validate    # ruff, mypy, the full suite under coverage, the secret pass
 make selfcheck   # all three verdicts against the real planlint -> evidence/03-mcp-selfcheck.json
 ```
 

@@ -1,0 +1,6 @@
+scorers: autoevals, contains, exact_match, json_keys, llm_judge, policy_violation, regex_match, state_transition, trajectory_any_order, trajectory_exact, trajectory_in_order, trajectory_loop_detection, trajectory_precision_recall, trajectory_recovery, trajectory_step_efficiency, weighted
+datasets: braintrust, csv, inline, jsonl, langfuse, parquet
+targets: callable, echo, model
+sinks: braintrust, console, html_file, json_file, langfuse, phoenix
+judges: anthropic, bedrock, mock, openai, panel, phoenix_evals
+state_adapters: filesystem, in_memory, mock_http, sqlite

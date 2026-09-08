@@ -316,7 +316,7 @@ def test_an_explicit_flag_wins_over_a_broken_environment_variable(monkeypatch, t
         ]
     )
     captured = capsys.readouterr()
-    assert code == 0, "an unreachable endpoint is an ERROR row, not a laundered failure"
+    assert code == 2, "the only slot is ERROR, so no model was ever reached"
     assert "PROBE_MAX_TOKENS" not in captured.err, "the bad variable was never read"
     summary = json.loads(next((tmp_path / "raw").rglob("summary.json")).read_text())
     assert summary["sampling"]["max_tokens"] == 100

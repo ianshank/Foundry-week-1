@@ -15,10 +15,18 @@ SRC    := mcp_server/src
 # defined in exactly one place.
 RUN := PYTHONPATH=$(SRC) $(PY)
 
+# Every shell script the repo ships, discovered rather than listed. The list
+# used to be hard-coded in three places (here, CI, the hook) and a fourth
+# script would have been added to none of them.
+SHELL_SCRIPTS := $(shell ls .githooks/* 2>/dev/null) \
+                 $(wildcard scripts/*.sh) $(wildcard .claude/hooks/*.sh)
+
 .DEFAULT_GOAL := help
-.PHONY: help setup hooks baseline test regression lint typecheck scan validate \
-        coverage selfcheck serve probe probe-blocked promote verdict \
-        docker-test docker-transport docker-lint clean
+.PHONY: help setup hooks baseline test regression lint typecheck scan secrets \
+        validate coverage selfcheck serve probe probe-blocked promote verdict \
+        test-unit test-integration test-functional test-e2e test-journey \
+        test-security test-sanity test-regression aqa test-live test-7layers \
+        shellcheck docker-test docker-transport docker-lint clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -44,11 +52,15 @@ hooks: ## Install the git pre-commit gate (secret scan + gitleaks + lint)
 
 # ------------------------------------------------------- validation gauntlet
 
+# `$(PY) -m` rather than a bare `ruff`/`mypy`. PY already prefers .venv, but
+# these two targets went through PATH -- so on a fresh `make setup && make
+# validate` they either failed outright or silently linted with a system ruff
+# at a different version than the venv the rest of the gauntlet uses.
 lint: ## ruff over the whole repo
-	ruff check .
+	$(PY) -m ruff check .
 
 typecheck: ## mypy over mcp_server/src and scripts
-	mypy
+	$(PY) -m mypy
 
 test: ## The full suite (contract + smoke; smoke skips without the SDK)
 	$(PYTEST)
@@ -60,11 +72,64 @@ coverage: ## Run the suite under coverage and enforce the floor
 	$(PY) -m coverage run -m pytest -q
 	$(PY) -m coverage report
 
+# -------------------------------------------------- 7-layer test targets
+# Layer 1: unit, 2: integration, 3: functional, 4: e2e, 5: journey,
+# 6: security, 7: sanity. Plus regression (guard layer) and aqa.
+
+test-unit: ## Layer 1: unit tests
+	$(PYTEST) tests/unit/ -v
+
+test-integration: ## Layer 2: integration tests
+	$(PYTEST) tests/integration/ -v
+
+test-functional: ## Layer 3: functional tests
+	$(PYTEST) tests/functional/ -v
+
+test-e2e: ## Layer 4: end-to-end tests
+	$(PYTEST) tests/e2e/ -v
+
+test-journey: ## Layer 5: user journey tests
+	$(PYTEST) tests/journey/ -v
+
+test-security: ## Layer 6: security gate tests
+	$(PYTEST) tests/security/ -v
+
+test-sanity: ## Layer 7: sanity / environment checks
+	$(PYTEST) tests/sanity/ -v
+
+test-regression: ## Regression guard layer: fixed-defect guards (D-01/D-02, F4, F5, F9)
+	$(PYTEST) tests/regression/ -v
+
+aqa: ## AQA acceptance layer: tests marked with @pytest.mark.aqa
+	$(PYTEST) -m aqa -v
+
+test-live: ## Lane D: contact a real vendor LLM (opt-in: PROBE_LIVE=1 PROBE_MODELS=...)
+	PROBE_LIVE=$${PROBE_LIVE:-1} $(PYTEST) -m live_llm -v -rs
+
+test-7layers: test-unit test-integration test-functional test-e2e test-journey test-security test-sanity test-regression ## All 7 layers + regression guard in one shot
+
+
 scan: ## Credential pass over evidence/ traces/ snippets/ configs/ decisions/
 	$(PY) scripts/scan_evidence.py
 
-validate: lint typecheck coverage scan ## Everything, in order, stopping at the first failure
-	@bash -n scripts/00-baseline.sh .githooks/pre-commit .claude/hooks/check-edited-file.sh
+secrets: scan ## The full credential gate: scan_evidence + gitleaks over history
+	@if command -v gitleaks >/dev/null 2>&1; then \
+	  gitleaks detect --config .gitleaks.toml --no-banner --redact; \
+	else \
+	  echo "gitleaks not installed -- CI's secrets job still runs it over full history."; \
+	  echo "  brew install gitleaks   |   https://github.com/gitleaks/gitleaks"; \
+	fi
+
+shellcheck: ## Every shell script parses (what CI's contract job asserts)
+	@bash -n $(SHELL_SCRIPTS) && echo "shell scripts parse: $(words $(SHELL_SCRIPTS)) file(s)"
+
+# The set below is exactly what CI asserts, in the same order:
+#   lint/typecheck -> quality job    coverage -> quality job's floor
+#   regression     -> transport job  secrets  -> secrets job
+# `regression` was the gap: `make validate` was green while CI's transport leg
+# was the only thing that had ever run the suite with the SDK required, so the
+# one failure mode the transport job exists to catch was undetectable locally.
+validate: lint typecheck coverage regression secrets shellcheck ## Everything CI checks, in order, stopping at the first failure
 	@echo
 	@echo "All checks passed. Safe to open a PR."
 

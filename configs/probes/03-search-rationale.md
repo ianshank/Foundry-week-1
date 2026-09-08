@@ -20,7 +20,23 @@ If the recorded selection is not the one the numbers imply, say so and show the
 arithmetic. Do not assume the recorded selection is correct.
 
 ```json
-<<< PASTE node expansion HERE: parent visits, and for each child the
-    prior, visit count, mean value, and resulting UCT score; plus the
-    selected child and the exploration constant >>>
+{
+  "parent_visits": 100,
+  "exploration_constant": 1.414,
+  "selected_child": "child_B",
+  "children": {
+    "child_A": {
+      "prior": 0.5,
+      "visit_count": 50,
+      "mean_value": 0.8,
+      "uct_score": 0.95
+    },
+    "child_B": {
+      "prior": 0.5,
+      "visit_count": 50,
+      "mean_value": 0.6,
+      "uct_score": 0.75
+    }
+  }
+}
 ```

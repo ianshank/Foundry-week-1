@@ -18,14 +18,37 @@ derived from private source repos.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "scripts"))
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+if str(REPO / "scripts") not in sys.path:
+    sys.path.insert(0, str(REPO / "scripts"))
 
-from scan_evidence import scan_file  # noqa: E402  (path set above)
+try:
+    from scripts.scan_evidence import scan_file
+except ImportError:
+    from scan_evidence import scan_file  # type: ignore[import-not-found,no-redef]
+
+# The single reader of "did a model answer", shared with `probe.cli`'s exit
+# code so the two gates cannot drift apart. Imported rather than
+# reimplemented, for the same reason `scan_file` above is imported rather than
+# reimplemented: two definitions of one fact drift, and the one that drifts is
+# the one nobody reads.
+#
+# Same dual spelling as `scan_file`, and for the same reason: `scripts.` is
+# the form mypy resolves (its `mypy_path` has the repo root, not `scripts/`,
+# because adding the latter would make every script a duplicate module), while
+# the bare form is what resolves at runtime when only `scripts/` is on the
+# path -- which is how `make probe` and the Docker stages invoke these.
+try:
+    from scripts.probe.runner import no_model_answered
+except ImportError:  # pragma: no cover - exercised by the bare-path invocations
+    from probe.runner import no_model_answered  # type: ignore[import-not-found,no-redef]
 
 TRACES = REPO / "traces"
 SKIP_NAMES = {"__pycache__", ".DS_Store"}
@@ -35,7 +58,33 @@ class PromotionRefused(RuntimeError):
     """The capture was not promoted, and the message says why."""
 
 
-def promote(source: Path, name: str | None = None, destination_root: Path | None = None) -> Path:
+def _no_model_answered(source: Path) -> bool:
+    """True when `summary.json` exists and says every slot errored.
+
+    Absent, unreadable or unrecognised `summary.json` returns False: manual
+    exports are a supported input and this gate must not refuse a capture it
+    simply does not understand. It refuses only what it can positively read as
+    a run in which nothing was contacted.
+    """
+    summary_path = source / "summary.json"
+    if not summary_path.is_file():
+        return False
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return False
+    # Delegated so there is one reader of "did a model answer". This gate and
+    # `probe.cli`'s exit code were deciding the same fact from different keys
+    # -- `status` here, `screen` there -- with nothing tying them together.
+    return no_model_answered(summary)
+
+
+def promote(
+    source: Path,
+    name: str | None = None,
+    destination_root: Path | None = None,
+    allow_error_run: bool = False,
+) -> Path:
     """Copy `source` into the tracked traces directory after a clean scan.
 
     Returns the destination path. Raises `PromotionRefused` rather than
@@ -51,6 +100,14 @@ def promote(source: Path, name: str | None = None, destination_root: Path | None
         raise PromotionRefused(
             f"{destination} already exists; pass --as <name> or remove it first. "
             "Overwriting a promoted trace would silently rewrite evidence."
+        )
+
+    if not allow_error_run and _no_model_answered(source):
+        raise PromotionRefused(
+            f"{source} records a run in which no model answered -- every result has "
+            "status ERROR. Promoting it would put a capture into tracked traces/ that "
+            "evidence/02-bakeoff.md could cite as a result. Fix the endpoint and "
+            "re-run, or pass --allow-error-run if the error transcript is the evidence."
         )
 
     findings: list[str] = []
@@ -74,15 +131,36 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="a run directory under traces/raw/")
     parser.add_argument("--as", dest="name", default=None, help="name it differently in traces/")
+    parser.add_argument(
+        "--dest-root",
+        dest="dest_root",
+        type=Path,
+        default=None,
+        help="override destination root directory (defaults to traces/)",
+    )
+    parser.add_argument(
+        "--allow-error-run",
+        action="store_true",
+        help="promote even when every result errored (the error is the evidence)",
+    )
     args = parser.parse_args(argv)
 
     try:
-        destination = promote(args.source, args.name)
+        destination = promote(
+            args.source,
+            args.name,
+            destination_root=args.dest_root,
+            allow_error_run=args.allow_error_run,
+        )
     except PromotionRefused as refusal:
         print(f"REFUSED: {refusal}", file=sys.stderr)
         return 1
 
-    print(f"promoted -> {destination.relative_to(REPO)}")
+    try:
+        display_path = str(destination.relative_to(REPO))
+    except ValueError:
+        display_path = str(destination)
+    print(f"promoted -> {display_path}")
     print("Cite this path from evidence/02-bakeoff.md; it is tracked, traces/raw/ is not.")
     return 0
 

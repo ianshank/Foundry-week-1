@@ -11,7 +11,13 @@
     "",
     "Permissions are an allowlist of the read-only and validation commands this",
     "repo actually uses, so routine work does not prompt. Anything that writes",
-    "outside the repo, or touches the linted target repo, still prompts."
+    "outside the repo, or touches the linted target repo, still prompts.",
+    "",
+    "The read allow is `Read(./**)` -- relative to this settings file, so it",
+    "means `this repository`. It named an absolute /home path until now, which",
+    "granted nothing on any machine but the one it was written on and made the",
+    "deny list below look like it was contradicting a rule that was never",
+    "matching. Deny always wins over allow, so the narrow rules still hold."
   ],
 
   "permissions": {
@@ -28,7 +34,7 @@
       "Bash(bash -n:*)",
       "Bash(python3 scripts/scan_evidence.py:*)",
       "Bash(python3 scripts/promote_trace.py:*)",
-      "Read(//home/user/Foundry-week-1/**)"
+      "Read(./**)"
     ],
     "deny": [
       "Read(./.env)",

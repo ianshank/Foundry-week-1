@@ -38,7 +38,29 @@ if command -v gitleaks >/dev/null 2>&1; then
   fi
 fi
 
-# 3. Lint only the staged Python. Types and the full suite belong to CI; a
+# 3. Staged shell scripts parse. CI asserts this in the `contract` job, and it
+#    is the cheapest check here by an order of magnitude -- but it was the one
+#    gate the hook did not share with CI, so a script with an unclosed `if`
+#    could only be caught after a push. `bash -n` parses without executing.
+staged_sh="$(git diff --cached --name-only --diff-filter=ACM \
+  -- '*.sh' '.githooks/*' '.claude/hooks/*')"
+if [ -n "$staged_sh" ]; then
+  while IFS= read -r script; do
+    [ -n "$script" ] && [ -f "$script" ] || continue
+    case "$(head -c 2 -- "$script")" in
+      '#!') ;;                       # a script; parse it
+      *) [ "${script##*.}" = "sh" ] || continue ;;
+    esac
+    if ! output="$(bash -n "$script" 2>&1)"; then
+      printf 'FAIL\n' >&2
+      say "shell syntax error in $script:"
+      printf '%s\n' "$output" | sed 's/^/    /' >&2
+      fail=1
+    fi
+  done <<< "$staged_sh"
+fi
+
+# 4. Lint only the staged Python. Types and the full suite belong to CI; a
 #    pre-commit hook slow enough to interrupt thinking gets uninstalled.
 staged_py="$(git diff --cached --name-only --diff-filter=ACM -- '*.py')"
 if [ -n "$staged_py" ] && command -v ruff >/dev/null 2>&1; then

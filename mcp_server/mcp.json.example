@@ -1,7 +1,10 @@
 {
   "//": [
-    "Copy to mcp/mcp.json and fill in the absolute paths. mcp.json is gitignored:",
-    "it will contain real paths and, if you add one, a token.",
+    "Copy to mcp_server/mcp.json and fill in the absolute paths. mcp.json is",
+    "gitignored by name at any depth: it will contain real paths and, if you",
+    "add one, a token. The rule used to name the directory, and named the old",
+    "one, so for a while this file told you to write a token into a path the",
+    "ignore rule no longer covered.",
     "",
     "Register in Agent Builder via:",
     "  Tool -> + MCP Server -> Connect to an Existing MCP Server -> Command (stdio)",

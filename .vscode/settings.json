@@ -1,0 +1,12 @@
+{
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/mcp_server/src",
+    "${workspaceFolder}/scripts",
+    "${workspaceFolder}"
+  ],
+  "python.autoComplete.extraPaths": [
+    "${workspaceFolder}/mcp_server/src",
+    "${workspaceFolder}/scripts",
+    "${workspaceFolder}"
+  ]
+}

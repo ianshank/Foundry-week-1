@@ -3,13 +3,26 @@
 .env
 .env.local
 *.token
-mcp/mcp.json
+# Path-independent on purpose. This rule named `mcp/mcp.json` until that
+# directory was renamed to `mcp_server/`, at which point it silently protected
+# nothing -- while RUNBOOK.md went on telling the operator to fill the file
+# with real paths and possibly a GitHub token. Matching by name means the next
+# rename cannot reopen the hole.
+mcp.json
+**/mcp.json
 
 # Raw captures land here first and are promoted to evidence/ only after
 # `make scan` passes. Keeping them untracked means an accidental `git add -A`
 # cannot publish an unscanned transcript.
 traces/raw/
 evidence/raw/
+
+# Agent worktrees. A subagent isolation worktree lands here holding a full
+# shadow copy of the tree -- its own settings.json, its own skills, its own
+# stale pyproject.toml with a different coverage floor. Untracked is not
+# enough: `git add -A` would commit ~90 files that look authoritative and are
+# not, and the secret scan would then be walking two copies of the repo.
+.claude/worktrees/
 
 __pycache__/
 *.py[cod]
@@ -27,3 +40,8 @@ dist/
 build/
 .uv/
 .DS_Store
+.eval-runs/
+bad_target/
+mock_findings/
+mock_pass/
+scratch/

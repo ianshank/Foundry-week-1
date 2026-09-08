@@ -13,6 +13,19 @@ version: 2
 # ceiling already stops the failure mode that actually bit us -- an unpinned
 # `mcp>=1.2.0` floating to 2.x, where FastMCP was renamed and the server
 # stopped importing.
+#
+# Deliberately NOT covered, so the gaps are decisions rather than oversights:
+#
+#   docker    The Dockerfile pins `python:3.10-slim` *because* 3.10 is the floor
+#             declared in mcp_server/pyproject.toml -- the image exists to prove
+#             the suite passes there. Dependabot would open a PR to 3.13 every
+#             time one ships, and merging it would delete the only thing the
+#             image tests. A floor is raised by editing `requires-python`, and
+#             the image follows.
+#
+#   pip at /  The root pyproject.toml has no `[project]` table and declares no
+#             dependencies; it is ruff/mypy/coverage configuration. There is no
+#             manifest to update, and pointing Dependabot at it yields nothing.
 
 updates:
   - package-ecosystem: github-actions
@@ -25,6 +38,16 @@ updates:
     labels:
       - dependencies
       - github-actions
+    # One PR for the workflow's actions rather than one per action. The four
+    # floating tags (`checkout@v4`, `setup-python@v5`, `gitleaks-action@v2`)
+    # are reviewed the same way and pass or fail on the same CI run, so three
+    # separate PRs is three times the review for one decision. Grouped majors
+    # included on purpose: a major action bump is exactly what this entry
+    # exists to make visible, and hiding it in a separate ungrouped PR would
+    # not make it any more reviewed.
+    groups:
+      actions:
+        patterns: ["*"]
 
   - package-ecosystem: pip
     directory: /mcp_server
@@ -35,6 +58,14 @@ updates:
       prefix: "deps"
     labels:
       - dependencies
+    # The `dev` extra is four tools (pytest, coverage, ruff, mypy) that only
+    # ever fail together, in CI, on the PR that bumps them. `mcp` is excluded
+    # from the group so the one dependency that can break the server at runtime
+    # keeps arriving as its own reviewable PR.
+    groups:
+      dev-tooling:
+        patterns: ["*"]
+        exclude-patterns: ["mcp"]
     ignore:
       # A major bump is a rename waiting to happen -- 1.x -> 2.x already cost
       # us a broken server under green CI. Raise the ceiling by hand, with

@@ -1,0 +1,21 @@
+# Not a lockfile, and deliberately not one.
+#
+# NEXT_STEPS.md's "Do not do" list: "No lockfile. One direct dependency,
+# bounded." That dependency is declared in mcp_server/pyproject.toml as
+# `mcp>=1.2,<3` -- the upper bound is load-bearing, because 2.x renamed
+# FastMCP to MCPServer and an unbounded floor floated straight into it.
+# Dev tooling lives in that file's [project.optional-dependencies].
+#
+#   make setup      # venv + pip install -e "mcp_server[dev]" ruff mypy
+#
+# This file previously held a Windows `pip freeze` written in UTF-16LE with a
+# byte-order mark, pinning `mcp==2.1.1` and an editable VCS reference to one
+# commit of this repository. Nothing referenced it -- not the Dockerfile, not
+# the Makefile, not CI -- but the name is the most-guessed path at a Python
+# repository root, so `pip install -r requirements.txt` was a live way to
+# install a configuration nothing tests, from GitHub, over your own checkout.
+#
+# Deleting the file would leave that trap open for the next `pip freeze`.
+# The line below makes the habitual command resolve through the single source
+# of truth instead.
+-e ./mcp_server[dev]

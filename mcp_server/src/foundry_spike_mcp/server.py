@@ -23,7 +23,13 @@ Register in Agent Builder via
 with the command and args from `mcp_server/mcp.json.example`, or press F5 from
 the scaffold's debug panel. Expect the Toolkit to fail the first tool-add and
 open `mcp.json` for the environment variables; that is the documented flow, not
-a bug -- the server refuses to run without an allow list, and it is supposed to.
+a bug.
+
+To be exact about what refuses, because an earlier wording here said the server
+does and that is wrong: the **process starts** without an allow list and its
+tools register. Every *tool call* then returns BLOCKED with `no_allowed_roots`
+until one is set. That is the intended shape -- the guard fails closed, and it
+does so as a verdict rather than as a crash, which is the whole contract.
 """
 
 from __future__ import annotations

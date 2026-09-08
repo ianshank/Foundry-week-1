@@ -15,6 +15,8 @@ import pytest
 
 from foundry_spike_mcp.config import (
     DEFAULT_FAIL_ON_VALUES,
+    DEFAULT_FINDINGS_MAX_BYTES,
+    DEFAULT_FINDINGS_MAX_DEPTH,
     DEFAULT_JSON_FLAG,
     DEFAULT_MAX_ARTIFACT_BYTES,
     DEFAULT_TIMEOUT_SECONDS,
@@ -123,3 +125,45 @@ def test_config_objects_are_frozen():
 def test_loader_reads_the_mapping_it_is_given_not_os_environ(monkeypatch):
     monkeypatch.setenv("PLANLINT_BIN", "from-os-environ")
     assert load_planlint_config({"PLANLINT_BIN": "injected"}).binary == "injected"
+
+
+# --------------------------------------------------------------------------
+# The findings ceilings: deployment settings, so they come from the
+# environment, absent means a documented default and malformed means BLOCKED.
+# --------------------------------------------------------------------------
+
+
+def test_findings_ceilings_fall_back_to_documented_defaults():
+    loaded = load_planlint_config({})
+    assert loaded.findings_max_bytes == DEFAULT_FINDINGS_MAX_BYTES
+    assert loaded.findings_max_depth == DEFAULT_FINDINGS_MAX_DEPTH
+
+
+def test_findings_ceilings_are_read_from_the_environment():
+    loaded = load_planlint_config(
+        {"FOUNDRY_SPIKE_FINDINGS_MAX_BYTES": "1024", "FOUNDRY_SPIKE_FINDINGS_MAX_DEPTH": "8"}
+    )
+    assert loaded.findings_max_bytes == 1024
+    assert loaded.findings_max_depth == 8
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["FOUNDRY_SPIKE_FINDINGS_MAX_BYTES", "FOUNDRY_SPIKE_FINDINGS_MAX_DEPTH"],
+)
+@pytest.mark.parametrize("value", ["abc", "0", "-1"])
+def test_a_malformed_ceiling_is_a_config_error_not_a_silent_default(name, value):
+    """Absent falls back to a default; malformed is an operator mistake, and
+    substituting the default would hide it behind a plausible result."""
+    with pytest.raises(ConfigError):
+        load_planlint_config({name: value})
+
+
+def test_a_root_the_os_cannot_represent_is_a_config_error_not_a_bare_valueerror():
+    """`ConfigError` subclasses `ValueError`, not the other way round, so a raw
+    ValueError from `Path.resolve` escaped every `except ConfigError` in the
+    package. Only reachable through the mapping parameter for a NUL, since
+    os.environ rejects those itself, but a symlink loop reaches it from a real
+    variable."""
+    with pytest.raises(ConfigError):
+        load_planlint_config({"PLANLINT_TARGET": "/a\x00b"})

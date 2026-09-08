@@ -8,12 +8,13 @@ only evidence of working was that it had never been seen to fail.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from promote_trace import PromotionRefused, promote
-from scan_evidence import DEFAULT_TARGETS, scan_file
+from scan_evidence import DEFAULT_TARGETS, REPO, display, main, scan_file
 
 LEAKS = [
     ("github token", "ghp_abcdefghijklmnopqrstuvwxyz012345"),
@@ -161,9 +162,9 @@ def test_every_allowlisted_path_still_exists():
     for pattern in config["allowlist"]["paths"]:
         compiled = re.compile(pattern)
         matched = any(
-            compiled.search(str(p.relative_to(repo)))
+            compiled.search(p.relative_to(repo).as_posix())
             for p in repo.rglob("*")
-            if p.is_file() and ".git/" not in str(p)
+            if p.is_file() and ".git/" not in p.as_posix()
         )
         assert matched, f"gitleaks allowlist pattern matches nothing: {pattern}"
 
@@ -254,3 +255,137 @@ def test_the_custom_rule_actually_matches_a_developer_path():
         "SPIKE_HOME=./spikes",
     ):
         assert not pattern.search(portable), f"false positive: {portable}"
+
+
+# --------------------------------------------------------------------------
+# Scanning a directory outside the repository.
+#
+# The script advertises positional targets, and the use that most needs a gate
+# -- checking a staging directory before exporting it -- ended in a traceback
+# from `Path.relative_to`, which raises for anything not under the repo root.
+# --------------------------------------------------------------------------
+
+
+def test_an_absolute_path_outside_the_repo_is_shown_as_itself(tmp_path):
+    assert display(tmp_path) == str(tmp_path)
+
+
+def test_a_path_inside_the_repo_is_still_shown_relative():
+    assert display(REPO / "evidence" / "x.md") == str(Path("evidence") / "x.md")
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param(REPO / ".." / "outside", id="parent-of-repo"),
+        pytest.param(REPO / "traces" / ".." / ".." / "etc", id="climbs-back-out"),
+        pytest.param(REPO / "evidence" / ".." / ".." / "elsewhere" / "x.md", id="deeper-climb"),
+    ],
+)
+def test_a_path_that_only_looks_local_is_shown_as_where_it_really_is(spelling):
+    """`relative_to` compares syntax, so a target spelled with `..` printed as
+    though it sat in the repo: `REPO / "../outside"` came out as `../outside`
+    and `traces/../../etc` as `traces/../../etc`, both indistinguishable from a
+    real repo-relative path in the scan output.
+
+    An operator reads this output to decide whether an export is clean. A gate
+    that misreports *where* it found a credential is worse than one that misses
+    it, because it sends the fix to the wrong file.
+    """
+    shown = display(spelling)
+    assert Path(shown).is_absolute(), f"{shown!r} reads as repo-relative but resolves outside it"
+    assert shown == str(spelling.resolve())
+
+
+def test_display_survives_a_path_that_cannot_be_resolved():
+    """Resolution is what makes the check above honest, and resolution can
+    raise -- a NUL byte is a `ValueError`. A gate that crashes gets skipped, so
+    an unresolvable path falls back to what the caller passed rather than
+    taking the whole scan down."""
+    assert display(Path("nul\x00byte")) == "nul\x00byte"
+
+
+def test_a_clean_directory_outside_the_repo_scans_and_passes(tmp_path, capsys):
+    (tmp_path / "notes.md").write_text("a rule id, not a secret: SPEC001\n", encoding="utf-8")
+    assert main([str(tmp_path)]) == 0
+    assert "0 hit(s)" in capsys.readouterr().out
+
+
+def test_a_credential_outside_the_repo_still_fails_closed(tmp_path, capsys):
+    """The gate must not become permissive just because the target moved."""
+    leaky = tmp_path / "export" / "transcript.md"
+    leaky.parent.mkdir()
+    leaky.write_text("token ghp_abcdefghijklmnopqrstuvwxyz012345\n", encoding="utf-8")
+    assert main([str(tmp_path)]) == 1
+    out = capsys.readouterr().out
+    assert str(leaky) in out
+    assert "github-token" in out
+    # The location and the shape, never the value.
+    assert "ghp_abcdefghijklmnopqrstuvwxyz012345" not in out
+
+
+def test_a_missing_absolute_target_is_skipped_not_a_traceback(tmp_path, capsys):
+    """Skipped and reported, not crashed -- but not reported as a pass either.
+
+    This asserted `== 0`, which conflated "did not crash" with "succeeded".
+    They are different requirements and only the first is in this test's name.
+    A gate that opened no files must not exit 0; that is S-01, guarded in
+    `tests/regression/test_secret_gate_integrity.py`.
+    """
+    assert main([str(tmp_path / "nope")]) == 2
+    assert "does not exist" in capsys.readouterr().out
+
+
+def test_relative_targets_still_resolve_against_the_repo_root(capsys):
+    """Backwards compatibility: the documented invocations must not change."""
+    assert main(["evidence"]) == 0
+    assert "0 hit(s)" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# The ignore rules themselves. `mcp.json` holds real paths and, per the
+# runbook, possibly a GitHub token; the rule naming it was written before the
+# directory was renamed and then silently protected nothing for several commits.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    ["mcp_server/mcp.json", "mcp/mcp.json", "some/deep/dir/mcp.json"],
+)
+def test_a_filled_mcp_config_cannot_be_committed_from_anywhere(candidate):
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", candidate],
+        cwd=REPO,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"{candidate} is committable. The runbook tells the operator to fill it "
+        "with real paths and possibly a token."
+    )
+
+
+def test_the_example_config_is_still_tracked():
+    """The rule must catch the filled file without hiding the template that
+    tells someone how to fill it."""
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", "mcp_server/mcp.json.example"],
+        cwd=REPO,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1, "the example config must stay visible"
+
+
+def test_raw_capture_directories_are_still_ignored():
+    """Unchanged behaviour, asserted alongside the rule that broke: an
+    unscanned transcript must not be publishable by an absent-minded add."""
+    for candidate in ("traces/raw/run/x.md", "evidence/raw/x.md"):
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", candidate],
+            cwd=REPO,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"{candidate} is not ignored"
