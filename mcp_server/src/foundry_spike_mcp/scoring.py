@@ -423,15 +423,14 @@ def score_run(
             ignored=ignored,
         )
     if not scorers:
+        # No `if ignored:` branch here. The check above returns unconditionally
+        # when `ignored` is non-empty, so by this line it is always `[]` and
+        # the branch that used to append "N verdict field(s) were refused" was
+        # unreachable -- dead code that read as a live defence.
         detail = (
             "no object in the artifact carried a recognised verdict key "
             f"({', '.join(_PASSED_KEYS)}); pin the real sink schema before trusting this tool"
         )
-        if ignored:
-            detail += (
-                f"; {len(ignored)} verdict field(s) were refused as unnameable: "
-                + ", ".join(entry["source_path"] for entry in ignored[:5])
-            )
         return _blocked(
             BLOCKED_ARTIFACT_SCHEMA,
             detail,

@@ -421,3 +421,26 @@ def test_duplicate_verdict_keys_resolve_to_one_documented_answer(sink):
     assert result["scorers"][0]["passed"] is None
     assert result["verdict"] == BLOCKED
     assert result["blocked_reason"] == BLOCKED_NO_SCORED_RESULTS
+
+
+def test_an_artifact_with_zero_scorers_is_blocked_not_a_vacuous_pass(tmp_path, monkeypatch):
+    """An eval that ran no scorers is not an eval that passed.
+
+    `{"results": []}` is well-formed JSON with a recognised top-level shape and
+    nothing inside it, which is the exact input a `pass_rate` computed over an
+    empty set would report as 1.0 -- a non-result rendered as a pass, in the
+    tool this repository exists to keep honest.
+
+    The behaviour was already correct and covered by nothing: every existing
+    test that writes `{"results": []}` immediately overwrites the file before
+    calling `score_run`, so the literal never reached the code under test.
+    """
+    monkeypatch.setenv("EVAL_SINK_DIR", str(tmp_path))
+    monkeypatch.setenv("EVAL_ALLOWED_ROOTS", str(tmp_path))
+    (tmp_path / "empty-run.json").write_text(json.dumps({"results": []}), encoding="utf-8")
+
+    result = score_run("empty-run")
+
+    assert result["verdict"] == BLOCKED
+    assert result["pass_rate"] is None, "a rate over zero scorers must not be a number"
+    assert result["blocked_reason"] == "unrecognized_artifact_schema"
