@@ -24,13 +24,13 @@ from pathlib import Path
 import pytest
 
 from foundry_spike_mcp.config import EvalConfig, PlanlintConfig
-from foundry_spike_mcp.guards import ALLOWED_VERBS
+from foundry_spike_mcp.guards import ALLOWED_VERBS, REFUSED_VERBS
 from foundry_spike_mcp.planlint import lint_openspec, run_verb
 from foundry_spike_mcp.scoring import score_run
 from foundry_spike_mcp.verdicts import (
     BLOCKED,
     BLOCKED_ARTIFACT_UNREADABLE,
-    BLOCKED_TOOL_NOT_FOUND,
+    BLOCKED_GUARD_REJECTED,
     BLOCKED_UNEXPECTED_EXIT,
     FINDINGS,
     PASS,
@@ -163,23 +163,83 @@ class TestRecursionErrorContainment:
 # Finding F9 - All allowed verbs actually reach the subprocess
 # ---------------------------------------------------------------------------
 
+#: A stub that records the argv it was handed, so "reached the subprocess" can
+#: be asserted as a fact rather than inferred from the absence of one blocked
+#: reason.
+_RECORDS_ARGV = (
+    "import sys\n"
+    "from pathlib import Path\n"
+    "Path({marker!r}).write_text(' '.join(sys.argv[1:]), encoding='utf-8')\n"
+    "sys.exit(0)\n"
+)
+
+
 @pytest.mark.parametrize("verb", sorted(ALLOWED_VERBS))
-def test_all_allowed_verbs_reach_subprocess(make_stub, spec_repo: Path, verb: str) -> None:
+def test_all_allowed_verbs_reach_subprocess(
+    make_stub, spec_repo: Path, tmp_path: Path, verb: str
+) -> None:
     """Every verb in guards.ALLOWED_VERBS must reach the subprocess, not be blocked.
 
     An earlier revision advertised six verbs and could only ever run `validate`.
     The other five were dead config -- they appeared in the allow list but
-    run_verb had no dispatch path to them.
+    `run_verb` had no dispatch path to them.
 
-    The test imports from the source of truth (guards.ALLOWED_VERBS) so it
-    cannot drift out of sync with the actual allow list.
+    This asserted `blocked_reason != BLOCKED_TOOL_NOT_FOUND`, which is a proxy
+    for reaching the subprocess and a poor one: a verb blocked by the guard
+    reports `guard_rejected`, which is also not `tool_not_found`, so it passed.
+    Measured against the stub below, the old assertion was green for `init` and
+    `write` -- both `BLOCKED / guard_rejected`, neither of which executes
+    anything at all. A test named "reaches subprocess" could have stayed green
+    with every verb blocked.
+
+    The stub now records its own argv, so the fact is checked directly, and
+    `test_a_refused_verb_does_not_reach_the_subprocess` proves the marker can
+    register absence -- which is what the old form could never do.
+
+    The verbs come from `guards.ALLOWED_VERBS` so the parametrisation cannot
+    drift from the allow list.
     """
-    stub = make_stub("import sys\nsys.exit(0)\n")
+    marker = tmp_path / f"argv-{verb}.txt"
+    stub = make_stub(_RECORDS_ARGV.format(marker=str(marker)))
     cfg = PlanlintConfig(binary=str(stub), target=str(spec_repo), allowed_roots=(spec_repo,))
+
     result = run_verb(verb, config=cfg)
-    assert result.get("blocked_reason") != BLOCKED_TOOL_NOT_FOUND, (
-        f"Verb {verb!r} is in ALLOWED_VERBS but was blocked before reaching the subprocess. "
+
+    assert marker.is_file(), (
+        f"Verb {verb!r} is in ALLOWED_VERBS but never reached the subprocess "
+        f"(verdict {result['verdict']}, reason {result.get('blocked_reason')!r}). "
         "The allow list and the dispatch path are out of sync."
+    )
+    assert verb in marker.read_text(encoding="utf-8").split(), (
+        f"the subprocess ran but was not handed {verb!r}; argv was "
+        f"{marker.read_text(encoding='utf-8')!r}"
+    )
+    assert result["verdict"] == PASS, "the stub exits 0, so anything but PASS is the wrapper"
+    assert result["exit_code"] == 0
+
+
+@pytest.mark.parametrize("verb", sorted(REFUSED_VERBS))
+def test_a_refused_verb_does_not_reach_the_subprocess(
+    make_stub, spec_repo: Path, tmp_path: Path, verb: str
+) -> None:
+    """The falsifier for the test above, and half the point of the allow list.
+
+    The positive test is only meaningful if the marker can register *absence*.
+    These verbs are the ones that would write to the target repository, so
+    "blocked" here has to mean "nothing executed", not "executed and reported
+    a refusal afterwards".
+    """
+    marker = tmp_path / f"argv-{verb}.txt"
+    stub = make_stub(_RECORDS_ARGV.format(marker=str(marker)))
+    cfg = PlanlintConfig(binary=str(stub), target=str(spec_repo), allowed_roots=(spec_repo,))
+
+    result = run_verb(verb, config=cfg)
+
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_GUARD_REJECTED
+    assert not marker.exists(), (
+        f"{verb!r} is a refused verb and the subprocess ran anyway. A refusal "
+        "reported after the fact is not a refusal."
     )
 
 

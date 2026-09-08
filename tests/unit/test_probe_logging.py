@@ -11,6 +11,7 @@ reusing that module was preferred over writing a second one.
 from __future__ import annotations
 
 import logging
+import sys
 
 import pytest
 
@@ -59,6 +60,27 @@ def test_verbose_turns_on_debug_and_the_default_does_not() -> None:
     assert logging.getLogger("foundry_spike_mcp").level != logging.DEBUG
 
 
+def _stream_handlers(logger: logging.Logger) -> list[logging.StreamHandler]:
+    """The handlers this logger owns that actually write somewhere."""
+    return [handler for handler in logger.handlers if isinstance(handler, logging.StreamHandler)]
+
+
+def test_the_handler_check_rejects_a_logger_that_goes_nowhere() -> None:
+    """The falsifier for the test below, and the reason it needed one.
+
+    That test asserted `logger.handlers or logger.parent`. `logger.parent` is
+    the root logger for any non-root logger and is therefore *always* truthy,
+    so the disjunction could not be false -- it passed for a logger with zero
+    handlers, which is precisely the "logger that goes nowhere" its own failure
+    message named. It had never rejected anything and could not.
+    """
+    goes_nowhere = logging.getLogger("probe-fallback-falsifier")
+    goes_nowhere.handlers = []
+
+    assert goes_nowhere.parent, "a non-root logger always has a parent; that is the point"
+    assert not _stream_handlers(goes_nowhere)
+
+
 def test_a_record_survives_when_the_package_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     """The fallback arm is load-bearing, not decoration.
 
@@ -72,7 +94,19 @@ def test_a_record_survives_when_the_package_is_unavailable(monkeypatch: pytest.M
     monkeypatch.setattr(mod, "_SHARED", False)
     logger = mod.get_logger("fallback-check")
 
-    assert logger.handlers or logger.parent, "the fallback produced a logger that goes nowhere"
+    handlers = _stream_handlers(logger)
+    assert handlers, "the fallback produced a logger with no stream handler of its own"
+
+    # Not `is sys.stderr`: pytest's capture swaps `sys.stderr` after the
+    # handler binds its stream at construction, so that assertion would be
+    # flaky for a reason unrelated to the invariant. `is not sys.stdout` is the
+    # invariant that matters -- it is the same one
+    # `test_server_e2e_stdio.py::test_stdout_carries_only_protocol_even_at_debug_level`
+    # inspects raw bytes for -- and it is capture-robust.
+    assert all(handler.stream is not sys.stdout for handler in handlers), (
+        "a fallback handler pointed at stdout would put log records into the "
+        "JSON-RPC stream, which is the one thing this module exists to prevent"
+    )
 
 
 def test_the_fallback_logger_does_not_propagate_to_an_unknown_root(

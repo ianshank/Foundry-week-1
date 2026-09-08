@@ -122,15 +122,21 @@ class TestSpecRepoInfrastructure:
             "lint_openspec requires this directory tree."
         )
 
-    def test_spec_repo_is_a_directory(self, spec_repo: Path) -> None:
-        assert spec_repo.is_dir()
-
-    def test_spec_repo_is_under_tmp_path(self, spec_repo: Path, tmp_path: Path) -> None:
-        """spec_repo must be inside tmp_path to guarantee isolation."""
-        assert spec_repo.is_relative_to(tmp_path), (
-            f"spec_repo ({spec_repo}) is not under tmp_path ({tmp_path}). "
-            "Tests would share state between runs."
-        )
+    # Two tests were deleted here. Both were true by construction of the
+    # fixture, so neither could ever have failed:
+    #
+    #   test_spec_repo_is_a_directory      -- the fixture calls `mkdir(parents=True)`.
+    #                                         Had that failed, the fixture would
+    #                                         raise during setup and the assert
+    #                                         would never be reached.
+    #   test_spec_repo_is_under_tmp_path   -- the fixture body is literally
+    #                                         `root = tmp_path / "repo"`.
+    #
+    # This layer's stated job is that "if a test here fails, the failure is in
+    # the test *infrastructure*". A test that cannot fail does not do that job;
+    # it only makes the layer look larger. The one above, which asserts the
+    # `openspec/changes/` tree the guard actually requires, is kept -- a fixture
+    # that stopped creating `changes/` would break it.
 
 
 # ---------------------------------------------------------------------------
@@ -141,13 +147,31 @@ class TestSpecRepoInfrastructure:
 class TestPlatformAssertions:
     """Validates that platform detection behaves as expected for CI consumers."""
 
-    def test_sys_platform_is_known_value(self) -> None:
-        """sys.platform must be one of the known values CI uses to branch on."""
-        known_platforms = {"linux", "win32", "darwin", "cygwin"}
-        # sys.platform on Linux is 'linux', not 'linux2' in Python 3.3+
-        assert any(sys.platform.startswith(p) for p in known_platforms), (
-            f"sys.platform is {sys.platform!r}, which is not a recognised value. "
-            "Platform-conditional code (make_stub, skipif decorators) may misbehave."
+    def test_exactly_one_launcher_shape_is_exercised_on_this_platform(
+        self, make_stub
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Replaces a check on `sys.platform` that could not be false.
+
+        That test asserted `any(sys.platform.startswith(p) for p in {"linux",
+        "win32", "darwin", "cygwin"})`, which holds on every platform this repo
+        supports or CI runs, so it never rejected anything.
+
+        Its *intent* was real, though, and worth keeping: the two launcher tests
+        below are both `skipif`-guarded on `sys.platform`, so on an unrecognised
+        platform both would skip and this layer would report green having
+        executed nothing. This test cannot skip. It asserts the launcher shape
+        matches the platform and then actually runs the launcher, so "neither
+        branch was exercised" is no longer a silent pass.
+        """
+        stub = make_stub("import sys\nsys.exit(0)\n")
+
+        assert (stub.suffix == ".bat") == (sys.platform == "win32"), (
+            f"make_stub produced {stub.name!r} on sys.platform={sys.platform!r}. "
+            "A .bat is correct only on Windows, and required there -- D-01 was a "
+            "shebang script handed to Windows, which fails with WinError 193."
+        )
+        assert subprocess.run([str(stub)], timeout=30, check=False).returncode == 0, (
+            "the launcher this platform produced is not executable by this platform"
         )
 
     @pytest.mark.skipif(
