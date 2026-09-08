@@ -123,7 +123,7 @@ def _enclosing_functions(tree: ast.Module) -> list[ast.FunctionDef | ast.AsyncFu
     return [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
 
 
@@ -139,7 +139,7 @@ def _own_nodes(function: ast.AST) -> list[ast.AST]:
     stack = list(ast.iter_child_nodes(function))
     while stack:
         node = stack.pop()
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         own.append(node)
         stack.extend(ast.iter_child_nodes(node))
