@@ -47,6 +47,14 @@ ENV_FINDINGS_MAX_BYTES = "FOUNDRY_SPIKE_FINDINGS_MAX_BYTES"
 ENV_FINDINGS_MAX_DEPTH = "FOUNDRY_SPIKE_FINDINGS_MAX_DEPTH"
 ENV_LOG_LEVEL = "FOUNDRY_SPIKE_LOG_LEVEL"
 ENV_LOG_FORMAT = "FOUNDRY_SPIKE_LOG_FORMAT"
+# The self-check's three targets. They live here rather than as inline
+# literals in `__main__.py` for a reason beyond tidiness: both test suites
+# derive what they clear between tests by reflecting over the `ENV_*` names in
+# this module, so a variable spelled anywhere else is never isolated, and a
+# developer with it set in their shell decides the result of a contract test.
+ENV_SELFCHECK_PASS_TARGET = "SELFCHECK_PASS_TARGET"  # noqa: S105 - "PASS" is a verdict, not a password
+ENV_SELFCHECK_FINDINGS_TARGET = "SELFCHECK_FINDINGS_TARGET"
+ENV_SELFCHECK_BLOCKED_TARGET = "SELFCHECK_BLOCKED_TARGET"
 
 # -------------------------------------------------------------- defaults
 DEFAULT_PLANLINT_BIN = "planlint"

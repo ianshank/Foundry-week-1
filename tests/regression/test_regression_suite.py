@@ -213,3 +213,23 @@ def test_ci_coverage_floor_matches_pyproject() -> None:
         "ci.yml hard-codes --fail-under=80, overriding pyproject.toml's fail_under=90. "
         "Remove the --fail-under flag from ci.yml and let pyproject.toml govern."
     )
+
+
+def test_the_declared_coverage_floor_is_at_least_ninety() -> None:
+    """Parse the floor, do not grep for the word.
+
+    `test_coverage_gate_is_configured_in_pyproject` asserts `"fail_under" in
+    content`, which is satisfied by `fail_under = 0`. Its docstring claims it
+    stops "deleting tests passes CI"; a substring check stops exactly one
+    spelling of nothing. The value is the whole point, so read the value.
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        tomllib = pytest.importorskip("tomli", reason="no TOML parser on this interpreter")
+
+    repo_root = Path(__file__).resolve().parents[2]
+    parsed = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    floor = parsed["tool"]["coverage"]["report"]["fail_under"]
+
+    assert floor >= 90, f"the coverage floor was lowered to {floor}"

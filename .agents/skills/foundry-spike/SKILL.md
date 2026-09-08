@@ -19,8 +19,16 @@ Provides structured deterministic workflows for the Foundry Spike:
 
   ```bash
   python -m coverage run -m pytest
-  python -m coverage report -m --fail-under=80
+  python -m coverage report -m
   ```
+
+  No `--fail-under` on the command line. The floor is declared once, in
+  `pyproject.toml` `[tool.coverage.report] fail_under`, and a CLI flag
+  silently overrides it -- `tests/regression/test_regression_suite.py`
+  asserts the flag's absence from CI for exactly that reason. This file used
+  to prescribe `--fail-under=80` against a repository whose declared floor is
+  90, i.e. it instructed an agent to do the thing a regression guard exists
+  to forbid.
 
 - **Type Checking & Code Hygiene**:
 

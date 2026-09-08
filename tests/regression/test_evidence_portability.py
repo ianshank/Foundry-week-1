@@ -11,6 +11,7 @@ Three defects share this file because they share a failure surface: a
 
 from __future__ import annotations
 
+import codecs
 import json
 import subprocess
 from pathlib import Path
@@ -137,11 +138,30 @@ def test_unwritable_out_directory_is_an_argparse_error_not_a_traceback(
     assert excinfo.value.code == 2  # argparse's usage-error code
 
 
-_BOM = b"\xef\xbb\xbf"
+#: Every byte-order mark a text editor can leave at byte 0, longest first.
+#:
+#: This guard compared `BOM_UTF8` alone for two merges, which meant the one
+#: tracked file in this repository that actually carried a BOM --
+#: `requirements.txt`, a Windows `pip freeze` written in UTF-16LE -- walked
+#: straight past a check whose entire purpose was to catch it. A guard that
+#: enumerates one member of a family and calls itself repo-wide is the same
+#: shape of defect as the extension whitelist this test's docstring already
+#: warns about, one level further in.
+#:
+#: Longest-first matters for the *message*, not the match: `BOM_UTF32_LE`
+#: begins with `BOM_UTF16_LE`, so a shortest-first scan would report every
+#: UTF-32LE file as UTF-16LE and send the reader to the wrong encoding.
+_BOMS: tuple[tuple[str, bytes], ...] = (
+    ("UTF-32LE", codecs.BOM_UTF32_LE),
+    ("UTF-32BE", codecs.BOM_UTF32_BE),
+    ("UTF-8", codecs.BOM_UTF8),
+    ("UTF-16LE", codecs.BOM_UTF16_LE),
+    ("UTF-16BE", codecs.BOM_UTF16_BE),
+)
 
 
-def test_no_tracked_text_file_starts_with_a_utf8_bom() -> None:
-    """D-07: a BOM at byte 0 of a Python file breaks tools that read bytes.
+def test_no_tracked_text_file_starts_with_any_byte_order_mark() -> None:
+    """D-07: a BOM at byte 0 breaks tools that read bytes.
 
     `tests/integration/test_mcp_integration.py` carried one and it was removed
     in a4d3f22. Nothing stopped the next editor putting one back, in that file
@@ -154,6 +174,9 @@ def test_no_tracked_text_file_starts_with_a_utf8_bom() -> None:
     skip: `Makefile` and `.github/CODEOWNERS` both matched no pattern in an
     earlier draft of this test, which would have made a BOM in either of them
     invisible to a guard whose whole stated purpose is repo-wide coverage.
+
+    It checks every BOM rather than UTF-8's alone for the same reason, and
+    that widening is what first caught `requirements.txt`.
     """
     repo_root = Path(__file__).resolve().parents[2]
     listed = subprocess.run(
@@ -169,13 +192,104 @@ def test_no_tracked_text_file_starts_with_a_utf8_bom() -> None:
         if not full.is_file():
             continue
         try:
-            head = full.read_bytes()[:3]
+            head = full.read_bytes()[:4]
         except OSError:
             continue
-        if head == _BOM:
-            offenders.append(rel)
+        for label, bom in _BOMS:
+            if head.startswith(bom):
+                offenders.append(f"{rel} ({label})")
+                break
 
     assert not offenders, (
-        "These tracked files start with a UTF-8 BOM: " + ", ".join(sorted(offenders)) +
+        "These tracked files start with a byte-order mark: " + ", ".join(sorted(offenders)) +
         ". Re-save them as UTF-8 without a signature."
     )
+
+
+def test_a_real_all_error_capture_is_refused_by_promotion(tmp_path: Path) -> None:
+    """D-04 with nothing faked in between: real producer, real consumer.
+
+    The guard above hand-writes rows carrying both `status` and `screen`, so
+    it proves promotion reads *a* key -- not that the key it reads is one
+    `probe.cli` still writes. This drives the actual CLI and hands its actual
+    output to the actual gate, so a change to the row envelope breaks it.
+
+    An unknown provider errors before any socket is opened, so this needs no
+    network and runs anywhere.
+    """
+    from probe.cli import main as probe_main
+
+    out = tmp_path / "raw"
+    assert probe_main(
+        ["--models", "notaprovider:m", "--expect", "FINDINGS", "--out", str(out)]
+    ) == 2
+
+    capture = next(out.iterdir())
+    with pytest.raises(PromotionRefused, match="no model answered"):
+        promote(capture, destination_root=tmp_path / "traces")
+
+
+def test_status_and_screen_agree_on_both_sides_of_reached_a_model(tmp_path: Path) -> None:
+    """`status` and `screen` are two spellings of one fact, on *both* sides.
+
+    `cli.main` gates the exit code on `screen`; `promote_trace` gates
+    promotion on `status`. If a row could ever carry `status: OK` beside
+    `screen: ERROR`, the two gates would disagree about the same run.
+
+    An earlier version of this test drove only unknown providers, so every
+    row came from the branch that sets `screen=ERROR` and `status=ERROR` from
+    the same literal in the same expression -- it asserted `True == True` by
+    construction and could not fail. The OK side, where `screen` is one of
+    HELD/LAUNDERED/REVIEW, is the side where drift would actually hurt, so an
+    injected `call_model_fn` supplies both.
+    """
+    from probe.runner import row_reached_a_model, run_probe_cells
+    from probe.screen import ERROR, OK
+
+    def _answer(slot, system, user, timeout, sampling):  # noqa: ARG001 - signature is the seam
+        if slot.startswith("dead:"):
+            return {"status": ERROR, "error": "no endpoint"}
+        return {"status": OK, "text": "VERDICT: FINDINGS", "latency_ms": 1, "total_tokens": 2}
+
+    rows = run_probe_cells(
+        slots=["live:a", "dead:b"],
+        system="s",
+        user="u",
+        expect="FINDINGS",
+        out_dir=tmp_path,
+        timeout=1,
+        sampling={},
+        call_model_fn=_answer,
+    )
+
+    assert len(rows) == 2
+    by_slot = {row["slot"]: row for row in rows}
+
+    live = by_slot["live:a"]
+    assert live["status"] == OK and live["screen"] != ERROR
+    assert row_reached_a_model(live)
+
+    dead = by_slot["dead:b"]
+    assert dead["status"] == ERROR and dead["screen"] == ERROR
+    assert not row_reached_a_model(dead)
+
+
+def test_a_summary_with_no_status_key_is_refused_rather_than_promoted(
+    tmp_path: Path,
+) -> None:
+    """If the envelope ever drops `status`, refusing is the only safe answer.
+
+    The old gate asked `all(row.get("status") == "ERROR")`, which is vacuously
+    False when the key is absent -- so a producer change that dropped `status`
+    would have made every dead run promotable, silently, with the exit-code
+    guard still green.
+    """
+    capture = tmp_path / "raw" / "20260907T000003Z-02-verifier"
+    capture.mkdir(parents=True)
+    (capture / "summary.json").write_text(
+        json.dumps({"results": [{"slot": "ollama:m", "screen": "ERROR"}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PromotionRefused, match="no model answered"):
+        promote(capture, destination_root=tmp_path / "traces")

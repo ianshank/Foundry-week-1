@@ -194,3 +194,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
+          # On a pull request this action tries to post its findings as a PR
+          # comment, which needs `pull-requests: write`. The workflow grants
+          # `contents: read` and nothing else, so the attempt fails with
+          # "Resource not accessible by integration" -- noise that reads like
+          # a scan failure and is not one. Widening the token to let a
+          # third-party action comment is the wrong trade for a secret-scanning
+          # job: the findings are already in the step log, which is where
+          # someone triaging a credential leak should be looking anyway.
+          GITLEAKS_ENABLE_COMMENTS: "false"

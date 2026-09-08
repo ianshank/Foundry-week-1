@@ -34,6 +34,22 @@ try:
 except ImportError:
     from scan_evidence import scan_file  # type: ignore[import-not-found,no-redef]
 
+# The single reader of "did a model answer", shared with `probe.cli`'s exit
+# code so the two gates cannot drift apart. Imported rather than
+# reimplemented, for the same reason `scan_file` above is imported rather than
+# reimplemented: two definitions of one fact drift, and the one that drifts is
+# the one nobody reads.
+#
+# Same dual spelling as `scan_file`, and for the same reason: `scripts.` is
+# the form mypy resolves (its `mypy_path` has the repo root, not `scripts/`,
+# because adding the latter would make every script a duplicate module), while
+# the bare form is what resolves at runtime when only `scripts/` is on the
+# path -- which is how `make probe` and the Docker stages invoke these.
+try:
+    from scripts.probe.runner import no_model_answered
+except ImportError:  # pragma: no cover - exercised by the bare-path invocations
+    from probe.runner import no_model_answered  # type: ignore[import-not-found,no-redef]
+
 TRACES = REPO / "traces"
 SKIP_NAMES = {"__pycache__", ".DS_Store"}
 
@@ -57,10 +73,10 @@ def _no_model_answered(source: Path) -> bool:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return False
-    rows = summary.get("results") if isinstance(summary, dict) else None
-    if not isinstance(rows, list) or not rows:
-        return False
-    return all(isinstance(row, dict) and row.get("status") == "ERROR" for row in rows)
+    # Delegated so there is one reader of "did a model answer". This gate and
+    # `probe.cli`'s exit code were deciding the same fact from different keys
+    # -- `status` here, `screen` there -- with nothing tying them together.
+    return no_model_answered(summary)
 
 
 def promote(

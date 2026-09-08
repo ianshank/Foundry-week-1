@@ -80,13 +80,13 @@
       "case": "findings",
       "target": "e:/Coding_Projects/foundry_week1/bad_target",
       "expected_verdict": "FINDINGS",
-      "actual_verdict": "PASS",
-      "exit_code": 0,
+      "actual_verdict": "FINDINGS",
+      "exit_code": 1,
       "blocked_reason": null,
-      "matched": false,
+      "matched": true,
       "result": {
-        "verdict": "PASS",
-        "exit_code": 0,
+        "verdict": "FINDINGS",
+        "exit_code": 1,
         "blocked_reason": null,
         "blocked_detail": null,
         "verb": "validate",
@@ -105,9 +105,18 @@
           "schema_version": 1,
           "tool_version": "0.2.0",
           "target": "E:\\Coding_Projects\\foundry_week1\\bad_target",
-          "specs_checked": 0,
-          "findings": [],
-          "blocking": 0
+          "specs_checked": 1,
+          "findings": [
+            {
+              "rule": "SPEC001",
+              "severity": "ERROR",
+              "message": "missing acceptance criteria in spec",
+              "path": "openspec/spec.md",
+              "line": 12,
+              "subject": "SPEC001"
+            }
+          ],
+          "blocking": 1
         },
         "findings_parse_error": null,
         "stdout_excerpt": null,
@@ -157,5 +166,5 @@
       }
     }
   ],
-  "all_expected": false
+  "all_expected": true
 }

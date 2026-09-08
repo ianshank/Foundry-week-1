@@ -14,6 +14,11 @@ from .config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TIMEOUT,
     DEFAULT_TOP_P,
+    ENV_PROBE_MAX_TOKENS,
+    ENV_PROBE_MODELS,
+    ENV_PROBE_TEMPERATURE,
+    ENV_PROBE_TIMEOUT,
+    ENV_PROBE_TOP_P,
     PROBES,
     REPO,
     ProbeConfigError,
@@ -30,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--models",
-        default=os.environ.get("PROBE_MODELS", ""),
+        default=os.environ.get(ENV_PROBE_MODELS, ""),
         help="comma-separated provider:model slots",
     )
     parser.add_argument("--prompt", type=Path, default=PROBES / "02-verifier.md")
@@ -54,13 +59,13 @@ def main(argv: list[str] | None = None, call_model_fn: Any = None) -> int:
 
     try:
         if args.timeout is None:
-            args.timeout = _env_number("PROBE_TIMEOUT", DEFAULT_TIMEOUT, int)
+            args.timeout = _env_number(ENV_PROBE_TIMEOUT, DEFAULT_TIMEOUT, int)
         if args.temperature is None:
-            args.temperature = _env_number("PROBE_TEMPERATURE", DEFAULT_TEMPERATURE, float)
+            args.temperature = _env_number(ENV_PROBE_TEMPERATURE, DEFAULT_TEMPERATURE, float)
         if args.top_p is None:
-            args.top_p = _env_number("PROBE_TOP_P", DEFAULT_TOP_P, float)
+            args.top_p = _env_number(ENV_PROBE_TOP_P, DEFAULT_TOP_P, float)
         if args.max_tokens is None:
-            args.max_tokens = _env_number("PROBE_MAX_TOKENS", DEFAULT_MAX_TOKENS, int)
+            args.max_tokens = _env_number(ENV_PROBE_MAX_TOKENS, DEFAULT_MAX_TOKENS, int)
     except ProbeConfigError as error:
         parser.error(str(error))
 

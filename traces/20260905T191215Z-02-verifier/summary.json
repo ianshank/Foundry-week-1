@@ -1,7 +1,7 @@
 {
   "captured": "20260905T191215Z",
-  "prompt": "configs\\probes\\02-verifier.md",
-  "system_prompt": "configs\\probes\\system-prompt.md",
+  "prompt": "configs/probes/02-verifier.md",
+  "system_prompt": "configs/probes/system-prompt.md",
   "expected_verdict": "FINDINGS",
   "sampling": {
     "temperature": 0.0,

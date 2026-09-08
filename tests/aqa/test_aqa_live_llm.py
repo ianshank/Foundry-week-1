@@ -23,18 +23,18 @@ import pytest
 from tests.aqa.live_endpoint import read_summary
 
 from probe.client import call_model
-from probe.config import PROBES, PROVIDERS
+from probe.config import ENV_PROBE_LIVE, ENV_PROBE_MODELS, PROBES, PROVIDERS
 
 pytestmark = [pytest.mark.aqa, pytest.mark.live_llm]
 
 
 def _slots() -> list[str]:
-    return [slot.strip() for slot in os.environ.get("PROBE_MODELS", "").split(",") if slot.strip()]
+    return [slot.strip() for slot in os.environ.get(ENV_PROBE_MODELS, "").split(",") if slot.strip()]
 
 
 def _skip_unless_configured() -> list[str]:
     """Return the runnable slots, or skip with the reason there are none."""
-    if os.environ.get("PROBE_LIVE") != "1":
+    if os.environ.get(ENV_PROBE_LIVE) != "1":
         pytest.skip("live vendor lane is opt-in: set PROBE_LIVE=1 to run it")
     slots = _slots()
     if not slots:
