@@ -4,6 +4,12 @@ Rewritten 2026-09-06 against a four-discipline review of `main` and of the open
 pull request #5. The evidence behind every item is in
 [`docs/roadmap/2026-09-06-review.md`](docs/roadmap/2026-09-06-review.md).
 
+> **Vintage.** This page was written against `main` before PRs #9, #11 and the
+> hardening work that followed. Its Track A/D/E status is still accurate; its
+> statements about coverage flags, `requirements.txt` and `scoring.py`'s import
+> fallback have been overtaken by those merges and are corrected in place. Read
+> `CHANGELOG.md` for what has landed since.
+
 **Status: Tracks A, D, and E are done.** Track E (Windows platform-parity,
 branch `h`) closed 12 test failures that were Windows-local and invisible to CI.
 It also established the regression guard layer and shared cross-platform test
