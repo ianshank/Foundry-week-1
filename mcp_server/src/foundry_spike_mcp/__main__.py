@@ -27,6 +27,41 @@ from .config import (
 from .planlint import lint_openspec
 from .verdicts import BLOCKED, FINDINGS, PASS
 
+#: This file lives at mcp_server/src/foundry_spike_mcp/__main__.py.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _portable_target(target: str) -> str:
+    """Repo-relative and POSIX when the target is inside the repo.
+
+    `evidence/03-mcp-selfcheck.json` is tracked, and it recorded absolute
+    machine paths: `E:/Coding_Projects/.../configs/fixtures/planlint/findings`.
+    Two problems, one of them a real defect.
+
+    The defect: nobody else can verify it. A guard that checks the cited
+    targets still exist -- the one thing that catches a hand-edited capture --
+    cannot run anywhere but the machine that produced the file. Worse,
+    `Path("E:/x").is_absolute()` is False on Linux, so a Windows path there
+    reads as *repo-relative* and the guard flags a target that is merely
+    foreign.
+
+    The portability: this is the same class as D-05, where `summary.json`
+    recorded native separators and the same run diffed against itself across
+    platforms. `probe.runner._rel` fixed it there; the self-check never got the
+    same treatment.
+
+    A target outside the repository stays absolute, because it genuinely is
+    machine-specific: `SELFCHECK_PASS_TARGET` points at a real OpenSpec
+    repository wherever the operator keeps it, and pretending otherwise would
+    be worse than saying so.
+    """
+    candidate = Path(target)
+    try:
+        return candidate.resolve().relative_to(REPO_ROOT).as_posix()
+    except (ValueError, OSError):
+        return target
+
+
 
 def _selfcheck(output: Path | None) -> int:
     """Exercise all three verdicts and report whether each landed correctly.
@@ -104,7 +139,7 @@ def _selfcheck(output: Path | None) -> int:
         report["cases"].append(
             {
                 "case": name,
-                "target": target,
+                "target": _portable_target(target),
                 "expected_verdict": expected,
                 "actual_verdict": result["verdict"],
                 "exit_code": result.get("exit_code"),

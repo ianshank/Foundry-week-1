@@ -172,6 +172,22 @@ jobs:
           python -m coverage run --branch --source=mcp_server/src,scripts -m pytest -q
           python -m coverage report
 
+      - name: Per-file coverage floor
+        # The floor above is measured against the TOTAL, and on this tree that
+        # leaves ~48 uncovered units of headroom -- enough for server.py (40
+        # units) to drop to zero coverage with the aggregate still above 90.
+        # server.py is the file the transport job's own comment says exists to
+        # stop "a server that could not import, under a green tick". A
+        # global-only floor cannot see any individual file, so a well-covered
+        # module silently subsidises an abandoned one.
+        #
+        # Reads coverage.json, which only exists after the step above, so this
+        # cannot move earlier and the guard skips (not fails) anywhere the file
+        # is absent -- notably the `contract` job, which installs pytest alone.
+        run: |
+          python -m coverage json -q
+          python -m pytest tests/regression/test_coverage_floor.py -q
+
   secrets:
     name: secrets
     runs-on: ubuntu-latest

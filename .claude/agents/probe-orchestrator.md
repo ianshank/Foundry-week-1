@@ -15,7 +15,15 @@ verify that no responses launder failure verdicts as passes, and promote clean e
 ## Core Responsibilities
 
 1. **Verify Runtime Setup**:
-   Ensure Ollama or remote provider endpoints are accessible. For local Ollama on Windows, verify models stored under `E:\Ollama\models`.
+   Ensure Ollama or remote provider endpoints are accessible. Resolve the
+   endpoint from `OLLAMA_ENDPOINT` (default `http://localhost:11434/v1`)
+   rather than assuming a model directory: where Ollama stores weights is
+   a property of one machine, and this file is shared. The previous text
+   named one developer's model directory by absolute path, which is
+   unreachable on the Ubuntu and Windows runners this repo tests on.
+   `tests/test_claude_assets.py` now fails if any asset does that again --
+   including this line, which is why it describes the path instead of
+   quoting it.
 
 2. **Execute Headless Probes**:
    Invoke `scripts/verifier_probe.py` across specified candidate slots (A, B, C, D) using pinned fixtures in `configs/probes/`.

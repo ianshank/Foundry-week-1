@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -277,3 +278,103 @@ def test_no_skill_or_agent_contains_a_credential():
 
     for path in [*SKILLS, *AGENTS, SETTINGS]:
         assert scan_file(path) == [], f"{path} tripped the secret scan"
+
+
+# --------------------------------------------------------------- cross-asset
+# The checks above prove each asset is well-formed in isolation. These prove
+# the assets agree with the repository they describe, which is where they
+# actually drift: a skill naming a Makefile target that was renamed, or an
+# agent whose tool list gained a typo, stays well-formed and stops working.
+
+
+def _makefile_targets() -> set[str]:
+    """Every target the Makefile declares, parsed rather than listed."""
+    text = (REPO / "Makefile").read_text(encoding="utf-8")
+    return {
+        line.split(":", 1)[0].strip()
+        for line in text.splitlines()
+        if re.match(r"^[a-zA-Z0-9_-]+:", line)
+    }
+
+
+@pytest.mark.parametrize("path", [*SKILLS, *AGENTS], ids=lambda p: p.parent.name or p.stem)
+def test_every_make_target_an_asset_names_actually_exists(path):
+    """A skill that tells an agent to run a target that was renamed is worse
+    than one that says nothing: the agent runs it, make fails with "No rule to
+    make target", and the agent reports a broken repository.
+
+    `spike-validate` gained a `make validate` reference when its hand-listed
+    command block was replaced by one; nothing would have noticed if the target
+    had been called something else.
+    """
+    body = path.read_text(encoding="utf-8")
+    declared = _makefile_targets()
+
+    # Only where it is written as a command -- inside backticks, or at the
+    # start of a line in a fenced block. A bare `\bmake \w+` also matches
+    # English ("make a decision", "make available"), and a guard that fires on
+    # prose is one somebody deletes.
+    referenced = set(re.findall(r"`make\s+([a-zA-Z0-9_-]+)[^`]*`", body))
+    referenced |= set(re.findall(r"(?m)^\s*make\s+([a-zA-Z0-9_-]+)", body))
+    # `make setup`-style prose sometimes names a variable assignment, not a
+    # target; only flag things that look like targets and are absent.
+    missing = sorted(name for name in referenced if name not in declared)
+
+    assert not missing, (
+        f"{path.name} tells the reader to run make targets that do not exist: {missing}"
+    )
+
+
+def test_settings_permission_entries_are_well_formed():
+    """`permissions.deny` entries are matched by the harness, not by a human.
+
+    A malformed entry does not error -- it simply never matches, so a rule the
+    file claims to enforce silently enforces nothing. Each entry must name a
+    tool and carry a non-empty argument pattern.
+    """
+    settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
+    permissions = settings.get("permissions", {})
+
+    assert permissions, "settings.json declares no permissions block"
+
+    malformed = []
+    for bucket in ("allow", "deny", "ask"):
+        for entry in permissions.get(bucket, []):
+            if not isinstance(entry, str) or not entry.strip():
+                malformed.append(f"{bucket}: {entry!r}")
+                continue
+            # The harness form is `Tool(pattern)` or a bare tool name.
+            if "(" in entry and not entry.rstrip().endswith(")"):
+                malformed.append(f"{bucket}: {entry!r} has an unclosed pattern")
+
+    assert not malformed, "malformed permission entries never match anything: " + ", ".join(malformed)
+
+
+def test_no_asset_hardcodes_an_absolute_developer_path():
+    r"""`probe-orchestrator.md` named one developer's `E:\Ollama\models`.
+
+    These files are shared and run on Ubuntu and Windows CI. An absolute path
+    from one machine is both unreachable elsewhere and a small disclosure of
+    the author's disk layout.
+    """
+    # `[\\/]`, with a doubled backslash, is load-bearing. An earlier draft had
+    # `[\/]` -- a single one -- which inside a character class is just an
+    # escaped forward slash, so the Windows half matched nothing and the guard
+    # sailed past `E:\Ollama\models`, the exact string it was written for. It
+    # is asserted below rather than trusted.
+    drive = re.compile(r"(?i)(?:^|[\s`'\"(=])[a-z]:[\\/]")
+    unix_home = re.compile(r"(?i)/(?:Users|home)/[a-z][\w.-]*/")
+
+    probe = "E:" + chr(92) + "Ollama"
+    assert drive.search(probe), "the drive-letter pattern is broken; it would pass everything"
+    assert unix_home.search("/home/someone/x"), "the unix-home pattern is broken"
+
+    offenders = []
+    for path in [*SKILLS, *AGENTS, SETTINGS]:
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if drive.search(line) or unix_home.search(line):
+                offenders.append(f"{path.name}:{number}")
+
+    assert not offenders, (
+        "assets naming an absolute machine path: " + ", ".join(offenders)
+    )

@@ -54,6 +54,16 @@ _CONTEXT_KEYS = (
     "target",
     "run_id",
     "command",
+    # The probe plane. `scripts/probe/` had no logging at all -- every
+    # diagnostic was a bare `print` to stderr -- so an operator seeing the
+    # probe exit 2 could not tell "no endpoint answered" from "PROBE_TIMEOUT
+    # was malformed and argparse exited", which are the same byte. These lift
+    # into the JSON formatter for free, the same way the server's do.
+    "slot",
+    "endpoint",
+    "screen",
+    "basis",
+    "error",
 )
 
 _configured = False

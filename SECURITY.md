@@ -74,9 +74,11 @@ Stated rather than left for someone to discover:
 - **Transitive dependencies are unpinned.** One direct dependency (`mcp`,
   bounded `>=1.2,<3`) with no lockfile, so CI resolves fresh each run. A
   transitive break appears as an unexplained red rather than a diff.
-- **No LICENSE.** The repository is public with no licence file, which means
-  all rights reserved by default and nobody may legally reuse it. That is a
-  decision for the owner, not a defect this file can fix.
+- **The licence is settled; GitHub may not have noticed.** An MIT `LICENSE`
+  is tracked at the repository root. This bullet previously said there was
+  none, which was true when written and stopped being true without the file
+  being updated. If GitHub's sidebar still reports no licence, that is a
+  detection lag on their side, not a missing file.
 - **The repository is public** and accumulates output derived from private
   source repositories. The three capture layers above are mitigation; making
   the repository private is the actual fix.

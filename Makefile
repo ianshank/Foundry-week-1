@@ -7,7 +7,14 @@
 SHELL := /usr/bin/env bash
 # Prefer the venv `make setup` creates, so `make test` does not silently run
 # against a system interpreter that has neither pytest nor the package.
-PY     ?= $(shell test -x .venv/bin/python && echo .venv/bin/python || echo python3)
+# Windows puts the venv interpreter at `Scripts/python.exe`, not `bin/python`.
+# Checking only the POSIX path meant this always fell through to `python3` on
+# Windows -- which resolves to the Microsoft Store shim, an interpreter with
+# neither pytest nor the package. That is precisely the outcome the comment
+# above says this line exists to prevent, and it went unnoticed because the
+# repo added a windows-latest CI leg and fixed twelve Windows-local test
+# failures while the Makefile stayed silently Unix-only.
+PY     ?= $(shell test -x .venv/bin/python && echo .venv/bin/python || (test -x .venv/Scripts/python.exe && echo .venv/Scripts/python.exe) || echo python3)
 PYTEST ?= $(PY) -m pytest
 SRC    := mcp_server/src
 
@@ -26,6 +33,7 @@ SHELL_SCRIPTS := $(shell ls .githooks/* 2>/dev/null) \
         validate coverage selfcheck serve probe probe-blocked promote verdict \
         test-unit test-integration test-functional test-e2e test-journey \
         test-security test-sanity test-regression aqa test-live test-7layers \
+        test-contract test-root \
         shellcheck docker-test docker-transport docker-lint clean
 
 help: ## Show this help
@@ -41,8 +49,8 @@ help: ## Show this help
 
 setup: ## Create the venv and install the server with dev deps (session 0)
 	$(PY) -m venv .venv
-	.venv/bin/pip install --upgrade pip
-	.venv/bin/pip install -e "mcp_server[dev]" ruff mypy
+	$(PY) -m pip install --upgrade pip
+	$(PY) -m pip install -e "mcp_server[dev]" ruff mypy
 	@echo
 	@echo "Now: cp .env.example .env && \$$EDITOR .env && make hooks"
 
@@ -68,9 +76,17 @@ test: ## The full suite (contract + smoke; smoke skips without the SDK)
 regression: ## The suite with the SDK required -- what CI's transport job runs
 	REQUIRE_MCP=1 $(PYTEST)
 
-coverage: ## Run the suite under coverage and enforce the floor
+coverage: ## Run the suite under coverage and enforce both floors
 	$(PY) -m coverage run -m pytest -q
 	$(PY) -m coverage report
+# `coverage json` then a second, tiny pytest run, because the per-file floor
+# needs a report that only exists after the first run finished. The global
+# floor above catches the aggregate sagging; this catches one file being
+# abandoned while better-covered files subsidise it -- which the aggregate
+# cannot see, and which `server.py` (40 units, the file the transport job
+# exists to guard) could do today without breaching 90.
+	$(PY) -m coverage json -q
+	$(PYTEST) tests/regression/test_coverage_floor.py -q
 
 # -------------------------------------------------- 7-layer test targets
 # Layer 1: unit, 2: integration, 3: functional, 4: e2e, 5: journey,
@@ -106,7 +122,19 @@ aqa: ## AQA acceptance layer: tests marked with @pytest.mark.aqa
 test-live: ## Lane D: contact a real vendor LLM (opt-in: PROBE_LIVE=1 PROBE_MODELS=...)
 	PROBE_LIVE=$${PROBE_LIVE:-1} $(PYTEST) -m live_llm -v -rs
 
-test-7layers: test-unit test-integration test-functional test-e2e test-journey test-security test-sanity test-regression ## All 7 layers + regression guard in one shot
+test-contract: ## The MCP tool contract suite (mcp_server/tests/) -- 300+ tests
+	$(PYTEST) mcp_server/tests/ -v
+
+test-root: ## The root-level suites outside the layer taxonomy
+	$(PYTEST) tests/*.py -v
+
+# `test-7layers` ran 109 of 577 tests and its help text said "all". The layer
+# targets pass explicit paths, which overrides `pytest.ini`'s `testpaths`, so
+# it silently skipped every one of mcp_server/tests/ -- the entire verdict
+# contract -- plus the four root-level files and tests/aqa/. Someone running
+# it before a PR, believing the name, skipped the thing this repository is
+# about. It now names what it runs and runs what it names.
+test-7layers: test-unit test-integration test-functional test-e2e test-journey test-security test-sanity test-regression test-contract test-root aqa ## Every layer, the contract suite, the root suites and AQA
 
 
 scan: ## Credential pass over evidence/ traces/ snippets/ configs/ decisions/
@@ -129,7 +157,7 @@ shellcheck: ## Every shell script parses (what CI's contract job asserts)
 # `regression` was the gap: `make validate` was green while CI's transport leg
 # was the only thing that had ever run the suite with the SDK required, so the
 # one failure mode the transport job exists to catch was undetectable locally.
-validate: lint typecheck coverage regression secrets shellcheck ## Everything CI checks, in order, stopping at the first failure
+validate: lint typecheck coverage regression aqa secrets shellcheck ## Everything CI checks, stopping at the first failure
 	@echo
 	@echo "All checks passed. Safe to open a PR."
 

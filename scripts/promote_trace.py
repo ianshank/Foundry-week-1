@@ -53,6 +53,12 @@ except ImportError:  # pragma: no cover - exercised by the bare-path invocations
 TRACES = REPO / "traces"
 SKIP_NAMES = {"__pycache__", ".DS_Store"}
 
+#: How many scan hits the refusal message lists before truncating. Named
+#: rather than left as a bare slice, matching `scan_evidence.PATTERN_PREVIEW_CHARS`.
+#: Deliberately not configurable: it is display width, and the message now
+#: states how many were suppressed, so nothing is hidden by the truncation.
+MAX_REPORTED_FINDINGS = 10
+
 
 class PromotionRefused(RuntimeError):
     """The capture was not promoted, and the message says why."""
@@ -112,15 +118,29 @@ def promote(
 
     findings: list[str] = []
     for path in sorted(p for p in source.rglob("*") if p.is_file()):
-        if any(part in SKIP_NAMES for part in path.parts):
+        # Scoped to the capture. Matched against `path.parts` -- the *absolute*
+        # path -- this skipped every file under a capture whose ancestor
+        # directory happened to be named `__pycache__`, while
+        # `shutil.copytree`'s `ignore_patterns` below matches per-directory
+        # basenames and copied them anyway. The result was an unscanned
+        # credential promoted into tracked `traces/` under a printed success,
+        # which is the exact outcome this function exists to prevent.
+        relative = path.relative_to(source)
+        if any(part in SKIP_NAMES for part in relative.parts):
             continue
         for line_number, kind, _pattern in scan_file(path):
-            where = f"{path.relative_to(source)}:{line_number}" if line_number else str(path)
+            # Relative on both branches. The `line_number == 0` case printed
+            # the absolute path, leaking the operator's home directory into a
+            # refusal message.
+            where = f"{relative}:{line_number}" if line_number else str(relative)
             findings.append(f"{where} [{kind}]")
     if findings:
+        shown = findings[:MAX_REPORTED_FINDINGS]
+        more = len(findings) - len(shown)
         raise PromotionRefused(
             "secret scan found "
-            f"{len(findings)} hit(s); not promoting:\n  " + "\n  ".join(findings[:10])
+            f"{len(findings)} hit(s); not promoting:\n  " + "\n  ".join(shown)
+            + (f"\n  ... and {more} more" if more else "")
         )
 
     shutil.copytree(source, destination, ignore=shutil.ignore_patterns(*SKIP_NAMES))

@@ -4,6 +4,12 @@ Rewritten 2026-09-06 against a four-discipline review of `main` and of the open
 pull request #5. The evidence behind every item is in
 [`docs/roadmap/2026-09-06-review.md`](docs/roadmap/2026-09-06-review.md).
 
+> **Vintage.** This page was written against `main` before PRs #9, #11 and the
+> hardening work that followed. Its Track A/D/E status is still accurate; its
+> statements about coverage flags, `requirements.txt` and `scoring.py`'s import
+> fallback have been overtaken by those merges and are corrected in place. Read
+> `CHANGELOG.md` for what has landed since.
+
 **Status: Tracks A, D, and E are done.** Track E (Windows platform-parity,
 branch `h`) closed 12 test failures that were Windows-local and invisible to CI.
 It also established the regression guard layer and shared cross-platform test
@@ -158,9 +164,7 @@ least 3.10, that files exist, that functions are callable, or re-parametrise
 cases already covered in `test_guards.py`.
 
 If this lands at all: delete the sanity layer, fold the non-duplicate cases into
-the existing files, restore the coverage floor to 85 (both the Makefile and CI
-now pass `--fail-under=80`, overriding `pyproject.toml`), drop the UTF-16
-`requirements.txt`, reconcile every published test count to one measured number
+the existing files, drop the UTF-16 `requirements.txt`, reconcile every published test count to one measured number
 with its environment stated, and remove the `sys.path` mutation that `scoring.py`
 now performs on itself in an import fallback — a tool module should not repair
 its own import path, and that fallback also swallows `ConfigError`.
@@ -314,8 +318,10 @@ out the deliverable.
   does not offer.
 - No SHA-pinning of Actions until this workflow is copied somewhere with write
   permissions or secrets.
-- No new test layers. Coverage is 88–92% depending on whether the SDK is
-  installed. The gap is specific invariants, listed as D5, not volume.
+- No new test layers. The gap is specific invariants, listed as D5, not
+  volume. (The coverage figure that used to be quoted here has been removed:
+  it was one of four numbers this repository stated for the same measurement,
+  none of which agreed. The enforced floors are 90% global and 80% per file.)
 - No slot D. The runbook already permits dropping it and PR #5 dropped it.
 
 ---

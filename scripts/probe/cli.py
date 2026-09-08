@@ -24,8 +24,12 @@ from .config import (
     ProbeConfigError,
     _env_number,
 )
+from .logging_setup import configure as configure_logging
+from .logging_setup import get_logger
 from .runner import build_summary, format_report_table, run_probe_cells
 from .screen import ERROR, LAUNDERED, _strip_html_comments
+
+_log = get_logger("cli")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,6 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", dest="top_p", type=float, default=None)
     parser.add_argument("--max-tokens", dest="max_tokens", type=int, default=None)
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="log every cell at DEBUG (same switch as FOUNDRY_SPIKE_LOG_LEVEL=DEBUG)",
+    )
     return parser
 
 
@@ -67,7 +77,14 @@ def main(argv: list[str] | None = None, call_model_fn: Any = None) -> int:
         if args.max_tokens is None:
             args.max_tokens = _env_number(ENV_PROBE_MAX_TOKENS, DEFAULT_MAX_TOKENS, int)
     except ProbeConfigError as error:
+        # Logged before exiting, because `parser.error` exits 2 -- the same
+        # byte `main` returns for "no model answered". An operator seeing exit
+        # 2 in CI could not tell a dead endpoint from a malformed
+        # `PROBE_TIMEOUT`, and nothing recorded which had happened.
+        _log.error("probe configuration is unusable", extra={"error": str(error)})
         parser.error(str(error))
+
+    configure_logging(verbose=args.verbose)
 
     slots = [slot.strip() for slot in args.models.split(",") if slot.strip()]
     if not slots:

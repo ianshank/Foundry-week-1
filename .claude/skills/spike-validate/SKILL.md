@@ -5,15 +5,33 @@ description: Run the full pre-PR validation gauntlet for the Foundry week-1 spik
 
 # Pre-PR validation
 
-Run these in order and **stop at the first failure**. Each one is cheap and
-each one catches a different class of defect; running them out of order wastes
-time debugging a type error that a lint failure already explained.
+Run the gauntlet through the Makefile, which is the single definition of what
+it contains:
 
 ```bash
-ruff check .              # style, imports, bandit rules
-mypy                      # types across mcp_server/src and scripts
-python -m pytest -q       # contract suite (no SDK needed) + smoke (skips without it)
-make scan                 # credential pass over evidence/ traces/ snippets/ configs/
+make validate
+```
+
+That is `lint typecheck coverage regression aqa secrets shellcheck`, in order,
+stopping at the first failure. **Do not re-list those commands here.** This
+skill previously spelled out four of them; `make validate` ran seven; and the
+two lists drifted apart until the skill was quietly prescribing a weaker gate
+than the repository enforced. The Makefile is the source of truth for *what*
+runs; this skill's value is the table below, which says what each failure
+*means*.
+
+If `make` is unavailable (it is not installed on every Windows box), run the
+same set directly and in the same order:
+
+```bash
+python -m ruff check .                              # style, imports, bandit rules
+python -m mypy                                      # types over mcp_server/src and scripts
+python -m coverage run -m pytest -q                 # the suite
+python -m coverage report                           # global floor, pyproject fail_under
+python -m coverage json -q &&   python -m pytest tests/regression/test_coverage_floor.py -q   # per-file floor
+REQUIRE_MCP=1 python -m pytest -q                   # the suite with the SDK required
+python -m pytest -q -m aqa -rs                      # AQA lane C (loopback HTTP)
+python scripts/scan_evidence.py                     # credential pass
 ```
 
 With the SDK installed, also:

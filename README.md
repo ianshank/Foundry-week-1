@@ -85,7 +85,7 @@ tests/                      what the repo asserts about itself: the .claude asse
                             the CLI entry points, evidence hygiene, the verifier screen,
                             and the layered suites that landed with the probe split
 
-tests/                      enterprise 7-layer test suite (94% coverage)
+tests/                      enterprise 7-layer test suite (floors: 90% global, 80% per-file)
   unit/                     Layer 1: modular component unit tests
   integration/              Layer 2: tool-function, filesystem, and probe pipeline flow
   functional/               Layer 3: planlint exit code-to-verdict mapping

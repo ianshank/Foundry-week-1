@@ -9,6 +9,59 @@ to lose by accident.
 
 ## [Unreleased]
 
+### Fixed (hardening: the gates that could not see what they guarded)
+
+- **The credential gate reported clean on what it never read.**
+  `scan_evidence.py` counted hits and never counted files, so a missing or
+  misspelled target printed `scanned 0 file(s), 0 hit(s)` and exited 0. It also
+  matched every rule line by line, which meant the multi-line rules in
+  `SECRET_PATTERNS` -- the PEM private-key block above all -- could never fire:
+  reproduced end to end, an RSA private key scanned clean and `promote_trace`
+  copied it into tracked `traces/`. And `REPO / name` grafted a drive-less
+  absolute path onto the repository's drive on Windows. Exit 2 now means
+  "could not look", distinct from 1, "looked and found a credential".
+- **`promote_trace` skipped the scan for a whole capture.** `SKIP_NAMES` was
+  matched against the absolute path, so a capture under any ancestor directory
+  named `__pycache__` had every file skipped by the credential scan while
+  `copytree` copied them anyway. An unscanned token reached the tracked
+  destination under a printed success.
+- **A developer's shell could decide a verdict.** The package suite cleared a
+  hand-written 7 names against a `config.py` declaring 15;
+  `EVAL_MAX_ARTIFACT_BYTES=1` produced 18 failures. Worse on the probe side,
+  where the leak produced a false *green*: `PROBE_TIMEOUT=abc` makes the CLI
+  exit 2 via `parser.error`, which the D-03 guards read as "no model answered",
+  so all three passed having never reached `run_probe_cells`.
+- **A fabricated verdict in the evidence.** `evidence/03-mcp-selfcheck.json` is
+  generated output; it was hand-edited to turn the FINDINGS case from an honest
+  `PASS / exit 0 / matched false` into `FINDINGS / 1 / true` with an invented
+  findings array, citing a target that does not exist and was gitignored. The
+  fixtures are now tracked under `configs/fixtures/planlint/`, verified against
+  the real binary, and the artifact was regenerated from an actual run.
+- **Transcripts were lost after the tokens were spent.** `run_probe_cells`
+  wrote each transcript with no handler; an `OSError` on write three lost rows
+  three and four *and* `summary.json`, leaving a partial capture that promotion
+  treats as complete.
+- **Cross-platform CI.** A mypy ignore that is required on Windows and unused
+  on Linux failed the quality job on every push; the self-check's blocked case
+  reported `BLOCKED` with `exit_code: None` on Windows runners because an
+  unresolved allow-list root never contains its own resolved target (8.3 short
+  paths). Both had been red on `main`.
+
+### Added
+
+- **A per-file coverage floor** (`tests/regression/test_coverage_floor.py`).
+  The global floor left ~48 units of headroom -- enough for `server.py`, the
+  file the transport job exists to guard, to drop to zero coverage and stay
+  green. Set at 80 with justified, expiring exemptions.
+- **Logging on the probe plane**, which had none: every diagnostic was a bare
+  `print`, so exit 2 for "no endpoint answered" was indistinguishable from
+  exit 2 for a malformed `PROBE_*`. Reuses the server's `logging_setup` rather
+  than defining a second discipline, and adds `-v/--verbose` mapping to the
+  same `FOUNDRY_SPIKE_LOG_LEVEL` the server honours.
+- **Cross-asset validation** of skills and agents: every `make` target an asset
+  names must exist, `settings.json` permission entries must be well-formed, and
+  no asset may hardcode an absolute machine path.
+
 ### Fixed
 
 - **Probe exit code no longer certifies a run that never happened (D-03).**

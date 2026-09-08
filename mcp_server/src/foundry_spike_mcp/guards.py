@@ -50,6 +50,21 @@ DENIED_FLAGS = frozenset(
 
 #: Options that take a separate value, so the value is not mistaken for a verb
 #: when `assert_safe_argv` hunts for one.
+#:
+#: `--output` is deliberately NOT in `DENIED_FLAGS`, and this is the second
+#: time that has needed saying. It reads like a write flag, and a review
+#: proposed moving it -- but `--output json` is one of the candidate
+#: `PLANLINT_JSON_FLAG` spellings this repo supports, pinned by
+#: `test_multi_token_json_flag_becomes_separate_argv_entries`. There it names a
+#: *format*, not a path, and denying it breaks a documented configuration.
+#:
+#: The residual risk is real and narrower than it looks: a future
+#: `run_verb(verb, extra_args=("--output", some_path))` would write a file from
+#: a module whose docstring says it never writes. Nothing calls it that way
+#: today, and `server.py` exposes no tool that reaches `extra_args`. If a
+#: caller ever needs `extra_args`, deny writes by inspecting the *value* at
+#: that call site -- not by denying the flag name, which cannot tell
+#: `--output json` from `--output /tmp/x.svg`.
 VALUE_OPTIONS = frozenset({"--target", "--fail-on", "--format", "--output"})
 
 
