@@ -121,12 +121,20 @@ rather than a constraint.
 reading four Playground cells, deciding which model laundered a failure,
 writing the verdict. The scaffolding removes the typing, not the thinking.
 
-**Deliberately unpinned:** the exact spelling of planlint's JSON flag
-(`PLANLINT_JSON_FLAG`, confirmed by `make baseline`) and the eval-harness sink
-schema (`_collect_scorers` walks tolerantly and returns BLOCKED on a shape it
-does not recognise, rather than an empty pass). Both get narrowed in session 3
-against real artifacts. Guessing them here would have produced code that looks
-finished and silently mis-reads.
+**Deliberately unpinned, and no longer:** both of these were left open at
+scaffold time and both have since been narrowed, so this paragraph now records
+what happened rather than what was planned.
+
+* planlint's JSON flag spelling (`PLANLINT_JSON_FLAG`) is **confirmed against
+  the real binary** — `evidence/00-planlint-flags.txt` records `--json` as an
+  alias of `--format json`.
+* The eval-harness sink schema is **pinned**, not tolerant. `_collect_scorers`
+  requires a root `results` list and refuses anything else with
+  `BLOCKED / unrecognized_artifact_schema`; the shape-tolerant walk this
+  paragraph used to describe has been removed. It was pinned **without** a real
+  artifact to pin it against, which is a live risk rather than a settled
+  question — `decisions/0002-pinned-sink-schema.md` records the shape, the
+  objection, and the condition under which the pin gets widened.
 
 ---
 
