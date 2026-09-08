@@ -358,8 +358,9 @@ def test_a_filled_document_keeps_every_section_its_template_asks_for() -> None:
         filled = _without_comments(counterpart.read_text(encoding="utf-8"))
 
         for pattern, kind in ((_HEADING, "heading"), (_BOLD_LABEL, "field")):
+            filled_matches = set(pattern.findall(filled))
             for wanted in pattern.findall(source):
-                if wanted not in filled:
+                if wanted not in filled_matches:
                     gaps.append(f"{counterpart.relative_to(_REPO).as_posix()}: {kind} {wanted!r}")
 
     assert not gaps, (
