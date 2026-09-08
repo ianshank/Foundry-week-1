@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
 from scripts.probe.client import EndpointError, _validate_endpoint, call_model
 from scripts.probe.config import (
+    HTTP_ERROR_DETAIL_CHARS,
     PROVIDERS,
     ProbeConfigError,
     Provider,
@@ -249,3 +251,103 @@ def test_verifier_probe_facade_helpers(monkeypatch):
     res_call = verifier_probe.call_model("ollama:test", "sys", "user")
     assert res_call["called"] is True
     assert res_call["post_fn"] is not None
+
+
+# ---------------------------------------------------------------------------
+# The recovery paths somebody wrote and nobody fired.
+#
+# Each of these is an `except` arm whose comment explains a real failure and
+# whose body has never executed. A recovery path that has never run is a
+# hypothesis about what happens when things go wrong, not a behaviour -- and
+# these are the arms that decide whether a spent run is recorded or lost.
+# ---------------------------------------------------------------------------
+
+
+def test_a_transcript_that_cannot_be_written_does_not_lose_the_run(tmp_path, monkeypatch):
+    """The most expensive possible failure, per the code's own comment.
+
+    `runner.py` says it plainly: "The model has already been called and the
+    tokens already spent, so losing the run because the transcript could not be
+    written is the most expensive possible failure." The row stays in memory,
+    gets a `transcript_error`, and still reaches `summary.json`.
+
+    That reasoning was carried over from `cli.py`'s handling of `--out`, and the
+    comment notes it "was not carried through here" -- so the arm existed
+    because someone reasoned about it, and then nothing exercised it. This is
+    the difference between a recovery path and a recovery hypothesis.
+    """
+    real_write = Path.write_text
+
+    def _refuse_transcripts(self, *args, **kwargs):
+        if self.suffix == ".json" and self.parent == tmp_path:
+            raise OSError(28, "No space left on device")
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _refuse_transcripts)
+
+    rows = run_probe_cells(
+        slots=["ollama:unreachable-on-purpose"],
+        system="s",
+        user="u",
+        expect="FINDINGS",
+        out_dir=tmp_path,
+        timeout=1,
+        sampling={},
+        call_model_fn=lambda *_a, **_k: {"status": ERROR, "error": "no endpoint"},
+    )
+
+    assert len(rows) == 1, "the run was lost because a transcript could not be written"
+    assert "transcript_error" in rows[0], (
+        "the row survived but does not record that its transcript is missing, so "
+        "`summary.json` would describe a capture whose files are not there"
+    )
+    assert "No space left" in rows[0]["transcript_error"]
+
+
+def test_an_http_error_body_is_truncated_and_reported_as_a_row():
+    """A 401 from a vendor is a row, not an exception.
+
+    `docs/roadmap/2026-09-06-review.md` flags this branch as the one that can
+    carry a vendor's error body -- which may echo an `Authorization` header --
+    into `detail`. It had never executed, so neither the truncation nor the
+    reporting had ever been observed.
+    """
+    import urllib.error
+
+    def _unauthorised(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            url="http://localhost:11434/v1/chat/completions",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(b"x" * 5000),
+        )
+
+    row = call_model(
+        "ollama:qwen2.5:14b", "sys", "user", timeout=1, post_fn=_unauthorised
+    )
+
+    assert row["status"] == ERROR
+    assert row["error"] == "HTTP 401"
+    assert len(row["detail"]) <= HTTP_ERROR_DETAIL_CHARS, (
+        "a vendor error body reached `detail` untruncated; the whole body may "
+        "echo the request, and this row is written into a tracked transcript"
+    )
+
+
+def test_a_response_with_no_choices_is_an_error_row_not_a_crash():
+    """`{"choices": []}` is the realistic malformed vendor response.
+
+    A provider that returns 200 with an empty `choices` list -- rate limited,
+    content filtered, or just wrong -- must produce an ERROR row carrying the
+    raw body for a human, not an `IndexError` that ends the sweep with the
+    other slots unrun.
+    """
+    row = call_model(
+        "ollama:qwen2.5:14b", "sys", "user", timeout=1,
+        post_fn=lambda *_a, **_k: {"choices": []},
+    )
+
+    assert row["status"] == ERROR
+    assert "choices" in row["error"]
+    assert row["raw"] == {"choices": []}, "the body was not kept for diagnosis"

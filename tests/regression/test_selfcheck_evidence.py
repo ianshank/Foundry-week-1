@@ -27,6 +27,7 @@ Two guards, because they fail differently:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
@@ -242,4 +243,212 @@ def test_no_recorded_target_anywhere_leaks_an_absolute_in_repo_path() -> None:
     assert not offenders, (
         "these recorded targets are absolute paths inside this repository; a "
         "real run records those relative:\n  " + "\n  ".join(offenders)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Template discipline. Four rules, chosen by measuring rather than by taste.
+#
+# A `scripts/check_evidence.py` with nine rules and a waiver idiom was designed
+# for this and then measured against the real documents. It did not earn its
+# keep: nine rules produced fourteen raw hits but only **two** distinct defects,
+# because four of the rules all fire on the same single act -- a template filled
+# in place with its counterpart never created. Of the rest, the cited-path rule
+# needed six waivers per true positive (prose references like `command_actions.py`
+# in another repository, `decisions/0001` used as shorthand, a `traces/index.md`
+# citation that resolves correctly *document*-relative, `<timestamp>`
+# placeholders, and absolute machine paths that resolve on Windows and fail on
+# Linux -- the platform-bound citation-guard class this repository already fixed
+# once, in `132bd60`); a `Yes`-must-cite-a-path rule was net negative, flagging
+# four correctly-filled rows while passing the worst claim in the tree; and a
+# quoted-latency rule could not fire at all, because nothing in scope cites a
+# `summary.json`.
+#
+# So: no new script, no waiver engine, no coverage burden. The four rules below
+# are the ones that produced true positives and zero false positives. Three of
+# them were red on this repository when they were written.
+# ---------------------------------------------------------------------------
+
+_NL = chr(10)
+_DOC_ROOTS = (_REPO / "evidence", _REPO / "decisions")
+
+#: A `- [x]` box, and a table cell that says nothing was actually done.
+_TICKED = re.compile(r"(?m)^\s*[-*]\s+\[x\]", re.IGNORECASE)
+_NOT_RUN_CELL = re.compile(r"\|\s*(not run|not measured|tbd|n/a)\s*\|", re.IGNORECASE)
+_HEADING = re.compile(r"(?m)^#{1,6}\s+(.+?)\s*$")
+_BOLD_LABEL = re.compile(r"\*\*([^*]+?:)\*\*")
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _templates() -> list[Path]:
+    return sorted(path for root in _DOC_ROOTS for path in root.rglob("*.template.md"))
+
+
+def _counterpart(template: Path) -> Path:
+    return template.with_name(template.name.replace(".template.md", ".md"))
+
+
+def _without_comments(text: str) -> str:
+    """HTML comments are the templates' instructions to the person filling them.
+
+    They legitimately contain `- [ ]` examples, headings quoted in prose and
+    bold labels being described rather than used, so every rule below reads the
+    document with them stripped.
+    """
+    return _HTML_COMMENT.sub("", text)
+
+
+#: Synthetic documents for the falsifiers below. The four rules above shipped
+#: without any -- while every other static rule in this repository ships both a
+#: rejecting fixture and an accepting one. A rule that has only ever run against
+#: the tree it was written for has not been shown to reject anything.
+_TICKED_TEMPLATE = "# T" + _NL + _NL + "- [x] done" + _NL
+_CLEAN_TEMPLATE = "# T" + _NL + _NL + "- [ ] done" + _NL
+_TICK_OVER_UNRUN = "# D" + _NL + _NL + "| a | not run |" + _NL + _NL + "- [x] complete" + _NL
+_TICK_OVER_DONE = "# D" + _NL + _NL + "| a | ran |" + _NL + _NL + "- [x] complete" + _NL
+_COMMENTED_TICK = "# T" + _NL + _NL + "<!-- - [x] an example in a comment -->" + _NL
+
+
+def test_the_template_rules_reject_what_they_are_named_for() -> None:
+    """Falsifiers for the four rules below, and acceptance cases beside them.
+
+    The commented-tick case is the one worth having: template instructions are
+    written in HTML comments and legitimately contain `- [x]` examples, so a
+    rule that did not strip them would fire on every well-formed template.
+    """
+    assert _TICKED.search(_without_comments(_TICKED_TEMPLATE)), "a ticked box went unseen"
+    assert not _TICKED.search(_without_comments(_CLEAN_TEMPLATE)), "an unticked box was flagged"
+    assert not _TICKED.search(_without_comments(_COMMENTED_TICK)), (
+        "a `- [x]` inside an HTML comment was read as a real tick; template "
+        "instructions are written in comments and legitimately contain examples"
+    )
+
+    assert _NOT_RUN_CELL.findall(_TICK_OVER_UNRUN), "an unrun cell went unseen"
+    assert not _NOT_RUN_CELL.findall(_TICK_OVER_DONE), "a completed cell was flagged"
+
+    assert _HEADING.findall("## 2b. Was it faster?" + _NL) == ["2b. Was it faster?"]
+    assert _BOLD_LABEL.findall("**Verdict on criterion 4:** x") == ["Verdict on criterion 4:"]
+
+
+def test_the_template_set_is_not_empty() -> None:
+    """The zero-match pin, and it is load-bearing rather than bookkeeping.
+
+    Three of the four rules below are plain loops over `_templates()`. A glob
+    that matched nothing would make them pass **silently** -- not skip, pass --
+    which is the failure mode this whole file is about. The repository already
+    ships this idiom twice, in `test_seam_is_closed.py` and
+    `test_policy_is_not_configuration.py`; it was missing here.
+    """
+    found = _templates()
+    assert found, (
+        "no `*.template.md` found under evidence/ or decisions/. Either the "
+        "templates moved, in which case update `_DOC_ROOTS`, or they were "
+        "deleted -- and the rules below are now checking nothing."
+    )
+    assert {path.name for path in found} >= {"02-bakeoff.template.md", "05-verdict.template.md"}, (
+        f"the known templates are missing from {[p.name for p in found]}"
+    )
+
+
+def test_no_template_carries_a_ticked_box() -> None:
+    """A template is a form, not a record.
+
+    `evidence/02-bakeoff.template.md` was filled *in place*: its four done-when
+    boxes were ticked and its matrix cells answered, while its first line still
+    read `<!-- Copy to evidence/02-bakeoff.md and fill in. -->`. That breaks the
+    tool for the next session and leaves the answers in a file nothing cites.
+    """
+    offenders = [
+        template.relative_to(_REPO).as_posix()
+        for template in _templates()
+        if _TICKED.search(_without_comments(template.read_text(encoding="utf-8")))
+    ]
+
+    assert not offenders, (
+        "these templates carry a ticked box, so they have been filled in place "
+        "rather than copied: " + ", ".join(offenders)
+    )
+
+
+def test_every_template_has_the_document_it_is_a_template_for() -> None:
+    """A template with no counterpart is a deliverable nobody produced.
+
+    `decisions/0001-foundry-toolkit-week1.md`, `RUNBOOK.md`, `NEXT_STEPS.md`,
+    `traces/.../summary.json` and `scripts/promote_trace.py` all cite
+    `evidence/02-bakeoff.md`. It has never existed on any ref.
+    """
+    missing = [
+        template.relative_to(_REPO).as_posix()
+        for template in _templates()
+        if not _counterpart(template).is_file()
+    ]
+
+    assert not missing, (
+        "these templates have no filled counterpart, so the document other "
+        "files cite does not exist: " + ", ".join(missing)
+    )
+
+
+def test_a_filled_document_keeps_every_section_its_template_asks_for() -> None:
+    """Dropping a section is how a question stops being answered.
+
+    `evidence/05-verdict.md` lost `## 2b.` -- the section that asks whether the
+    Playground was actually faster than the existing bench, which is criterion 4
+    of `decisions/0001` -- along with `**Verdict on criterion 4:**` and
+    `**Claims this recommendation does NOT rest on:**`.
+
+    `NEXT_STEPS.md` records adding 2b as *Fixed*. It was fixed in the template
+    only, so the record went on not answering the question while the form that
+    asks it sat next to the file. That is the shape this rule exists to catch:
+    the fix and the artifact drifting apart silently.
+    """
+    gaps: list[str] = []
+    for template in _templates():
+        counterpart = _counterpart(template)
+        if not counterpart.is_file():
+            continue  # covered by the test above; not this rule's business
+        source = _without_comments(template.read_text(encoding="utf-8"))
+        filled = _without_comments(counterpart.read_text(encoding="utf-8"))
+
+        for pattern, kind in ((_HEADING, "heading"), (_BOLD_LABEL, "field")):
+            filled_matches = set(pattern.findall(filled))
+            for wanted in pattern.findall(source):
+                if wanted not in filled_matches:
+                    gaps.append(f"{counterpart.relative_to(_REPO).as_posix()}: {kind} {wanted!r}")
+
+    assert not gaps, (
+        "these documents are missing sections their own template asks for, so a "
+        "question the template poses is going unanswered rather than being "
+        "answered 'not measured':\n  " + "\n  ".join(gaps)
+    )
+
+
+def test_no_document_ticks_a_box_over_a_cell_that_says_nothing_happened() -> None:
+    """A completion tick above an unrun row is the failure this repo is about.
+
+    `evidence/02-bakeoff.template.md` ticks `Matrix complete (no blank cells;
+    "dropped" is an answer, blank is not)` and `Resource usage captured for the
+    local slots` over a matrix with `not run` in ten cells. Both statements are
+    false, and they are ticked in the file the decision record cites.
+
+    Scoped to `evidence/` and `decisions/`, and to `not run` / `not measured`
+    style cells rather than empty ones: an honestly-empty cell in a table that
+    is still being filled is not a lie, but ticking "complete" above one is.
+    """
+    offenders: list[str] = []
+    for root in _DOC_ROOTS:
+        for path in sorted(root.rglob("*.md")):
+            text = _without_comments(path.read_text(encoding="utf-8"))
+            if not _TICKED.search(text):
+                continue
+            unrun = _NOT_RUN_CELL.findall(text)
+            if unrun:
+                offenders.append(
+                    f"{path.relative_to(_REPO).as_posix()}: {len(unrun)} unrun cell(s) "
+                    "under a ticked completion box"
+                )
+
+    assert not offenders, (
+        "these documents tick a completion box while carrying cells that say "
+        "the work was not done:\n  " + "\n  ".join(offenders)
     )

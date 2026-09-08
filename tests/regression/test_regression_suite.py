@@ -146,19 +146,109 @@ def _own_nodes(function: ast.AST) -> list[ast.AST]:
     return own
 
 
+#: Ways a stub body can put text on stdout through the console code page.
+#: `print` is on this list because it is what `tests/journey/` actually used
+#: before this branch -- an earlier version of the rule matched only
+#: `sys.stdout.write(` and would have missed the real site, which was caught by
+#: the other half of the rule by luck rather than by design.
+_TEXT_STDOUT_WRITES = ("sys.stdout.write(", "sys.stdout.writelines(", "print(")
+
+#: The only exculpation: bytes straight at the buffer, which no code page sees.
+_BYTES_STDOUT_WRITE = "sys.stdout.buffer"
+
+#: `@set PYTHONUTF8=1`, not merely the word. A bare substring test was
+#: satisfied by `@rem PYTHONUTF8 not set`.
+_UTF8_ENABLED = re.compile(r"PYTHONUTF8\s*=\s*1")
+
+#: Methods that write a file. `write_text` alone missed `write_bytes` and the
+#: `open(...)` form.
+_WRITE_METHODS = frozenset({"write_text", "write_bytes"})
+
+
 def _bat_valued_names(function: ast.AST) -> set[str]:
-    """Local names assigned an expression that builds a `.bat` path.
+    """Local names that end up holding a `.bat` path.
 
     `bat = script_dir / f"{name}.bat"` then `bat.write_text(...)` is the shape
     every factory here uses, so the write site alone does not say what is being
     written.
+
+    Three shapes beyond the obvious one, each of which was an evasion:
+
+    * `bat: Path = d / (name + ".bat")` -- an `ast.AnnAssign`. This is the same
+      node type the policy guard one directory over has a docstring about
+      ("Handling `ast.AnnAssign` is not tidiness"); it was fixed there and
+      reintroduced here in the same branch.
+    * `(bat := ...)` -- an `ast.NamedExpr`.
+    * `ext = ".bat"` then `bat = d / (name + ext)` -- the extension arrives
+      through a variable, so the assignment that builds the path contains no
+      `.bat` at all. Resolved by seeding from string constants first and
+      running to a fixed point.
     """
-    names: set[str] = set()
+    literal_bat: set[str] = set()
+    bindings: list[tuple[str, str]] = []
+
     for node in _own_nodes(function):
-        if not isinstance(node, ast.Assign) or ".bat" not in ast.unparse(node.value):
+        if isinstance(node, ast.Assign):
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        elif (
+            isinstance(node, (ast.AnnAssign, ast.NamedExpr))
+            and isinstance(node.target, ast.Name)
+            and node.value
+        ):
+            targets, value = [node.target.id], node.value
+        else:
             continue
-        names.update(target.id for target in node.targets if isinstance(target, ast.Name))
-    return names
+        rendered = ast.unparse(value)
+        for target in targets:
+            if ".bat" in rendered:
+                literal_bat.add(target)
+            bindings.append((target, rendered))
+
+    # Fixed point: a name built from a name that holds ".bat" also holds one.
+    changed = True
+    while changed:
+        changed = False
+        for target, rendered in bindings:
+            if target in literal_bat:
+                continue
+            if any(re.search(r"\b" + re.escape(known) + r"\b", rendered) for known in literal_bat):
+                literal_bat.add(target)
+                changed = True
+    return literal_bat
+
+
+def _launcher_writes(function: ast.AST, bat_names: set[str]) -> list[ast.expr]:
+    """Every expression written *as* a Windows launcher inside `function`.
+
+    Covers `<bat>.write_text(x)`, `<bat>.write_bytes(x)` and
+    `open(<bat>, "w").write(x)`. The first version handled only `write_text`,
+    so two of the three ways to create the same file were invisible.
+    """
+    written: list[ast.expr] = []
+
+    def _is_bat(expression: ast.expr) -> bool:
+        rendered = ast.unparse(expression)
+        return ".bat" in rendered or rendered in bat_names
+
+    for node in _own_nodes(function):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.args):
+            continue
+        # `<bat>.write_text(...)` / `<bat>.write_bytes(...)`
+        if node.func.attr in _WRITE_METHODS and _is_bat(node.func.value):
+            written.append(node.args[0])
+            continue
+        # `open(<bat>, "w").write(...)`
+        if node.func.attr == "write" and isinstance(node.func.value, ast.Call):
+            inner = node.func.value
+            if (
+                isinstance(inner.func, ast.Name)
+                and inner.func.id == "open"
+                and inner.args
+                and _is_bat(inner.args[0])
+            ):
+                written.append(node.args[0])
+    return written
 
 
 def _launcher_violations(source: str) -> list[str]:
@@ -166,25 +256,13 @@ def _launcher_violations(source: str) -> list[str]:
 
     D-02 had two halves and only one of them was ever guarded:
 
-    * D-02a -- the stub body wrote its payload with `sys.stdout.write(str)`,
-      which encodes through the console code page. On a cp1252 console a CJK
-      payload raises `UnicodeEncodeError`.
+    * D-02a -- the stub body wrote its payload through the console code page.
+      On a cp1252 console a CJK payload raises `UnicodeEncodeError`.
     * D-02b -- the `.bat` launcher did not set `PYTHONUTF8=1`, which is what
       forces UTF-8 stdio on Windows regardless of the code page.
 
-    The existing D-02 guards in this class drive `make_stub`, the canonical
-    factory, which does both correctly. They cannot see a *second* factory that
-    does neither -- and there was one, in `tests/functional/`, taking a
-    caller-supplied payload.
-
-    Scoped to `<path>.write_text(...)` calls where the path is a `.bat`, not to
-    functions that merely *mention* one. The first draft of this rule used the
-    looser form and reported thirteen hits, nine of them docstrings and
-    `assert stub.suffix == ".bat"` lines. A guard that cries wolf gets an
-    allowlist, and an allowlist is where this kind of rule goes to die.
-
-    Both halves are checked unconditionally, and the reason is measured rather
-    than assumed: they are individually *sufficient* and jointly *necessary*.
+    Both are checked unconditionally, and the reason is measured rather than
+    assumed: they are individually *sufficient* and jointly *necessary*.
     `PYTHONUTF8=1` rescues a text write, and a `sys.stdout.buffer` write does
     not care about the code page -- so a site with either one is safe, and only
     a site missing both actually fails. Enforcing both anyway means no reviewer
@@ -195,42 +273,43 @@ def _launcher_violations(source: str) -> list[str]:
     encoding bug. The child dies with `UnicodeEncodeError` and exits **1**,
     which `verdict_for_exit_code` maps to FINDINGS. A test that passes non-ASCII
     and expects PASS fails as a wrong-verdict mystery instead.
+
+    Scoped to functions that *write* a launcher, not to functions that merely
+    mention one. The first draft used the looser form and reported thirteen
+    hits, nine of them docstrings and `assert stub.suffix == ".bat"` lines. A
+    guard that cries wolf gets an allowlist, and an allowlist is where this kind
+    of rule goes to die.
+
+    Known residual: a launcher written with a suffix this rule does not know
+    (`.cmd`), or through a helper in another module. `_SUITE_ROOTS` covers both
+    test trees, so a helper would still be read -- just attributed to its own
+    function.
     """
     violations: list[str] = []
     for function in _enclosing_functions(ast.parse(source)):
         bat_names = _bat_valued_names(function)
-        wrote_a_launcher = False
+        launcher_payloads = _launcher_writes(function, bat_names)
+        if not launcher_payloads:
+            continue
 
-        for node in _own_nodes(function):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "write_text"
-                and node.args
-            ):
-                continue
-            receiver = ast.unparse(node.func.value)
-            is_launcher = ".bat" in receiver or receiver in bat_names
-            if not is_launcher:
-                continue
-            wrote_a_launcher = True
-            if "PYTHONUTF8" not in ast.unparse(node.args[0]):
+        for payload in launcher_payloads:
+            if not _UTF8_ENABLED.search(ast.unparse(payload)):
                 violations.append(
                     f"{function.name}: writes a .bat launcher without PYTHONUTF8=1 (D-02b)"
                 )
-
-        if not wrote_a_launcher:
-            continue
 
         # This function builds a fake binary for Windows, so its payload has to
         # survive the trip. Checked over the whole function because the body and
         # the launcher are written a few lines apart.
         body = chr(10).join(ast.unparse(node) for node in _own_nodes(function))
-        if "sys.stdout.write(" in body and "sys.stdout.buffer.write" not in body:
-            violations.append(
-                f"{function.name}: the stub body writes text to stdout rather than "
-                "bytes through sys.stdout.buffer (D-02a)"
-            )
+        if _BYTES_STDOUT_WRITE in body:
+            continue
+        violations.extend(
+            f"{function.name}: the stub body reaches stdout via {spelling.rstrip('(')} "
+            "rather than bytes through sys.stdout.buffer (D-02a)"
+            for spelling in _TEXT_STDOUT_WRITES
+            if spelling in body
+        )
     return violations
 
 
@@ -254,6 +333,47 @@ _MERELY_MENTIONS = (
     + '    """The stub is a .bat on Windows and a shebang script on POSIX."""' + _NL
     + '    assert stub.suffix == ".bat"' + _NL
 )
+
+
+#: Evasions found by an adversarial pass *after* the rule shipped. Every one
+#: was green. The `print()` case is the one that matters: it is what
+#: `tests/journey/test_engineer_workflow.py` actually contained before this
+#: branch, so the first version of this rule would have missed the real site
+#: and the other half caught it by luck rather than by design.
+_EVASIONS = {
+    "print() body": _HEADER + '    py.write_text("import json; print(json.dumps(p))")' + _NL + _BAT_UTF8,
+    "writelines body": (
+        _HEADER + '    py.write_text("import sys; sys.stdout.writelines(p)")' + _NL + _BAT_UTF8
+    ),
+    "open(bat, 'w')": _HEADER + _BODY_BYTES + '    open(bat, "w").write(launcher)' + _NL,
+    "write_bytes": _HEADER + _BODY_BYTES + "    bat.write_bytes(launcher.encode())" + _NL,
+    "annotated bat assignment": (
+        "def factory(payload):" + _NL + '    bat: Path = d / (name + ".bat")' + _NL
+        + _BODY_BYTES + "    bat.write_text(launcher)" + _NL
+    ),
+    "extension via a variable": (
+        "def factory(payload):" + _NL + '    ext = ".bat"' + _NL + "    bat = d / (name + ext)" + _NL
+        + _BODY_BYTES + "    bat.write_text(launcher)" + _NL
+    ),
+    "PYTHONUTF8 only in a comment": (
+        _HEADER + _BODY_BYTES + '    bat.write_text("@rem PYTHONUTF8 not set" + launcher)' + _NL
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_EVASIONS))
+def test_the_launcher_rule_rejects_the_evasions_it_once_allowed(label: str) -> None:
+    """Seven spellings that produced zero violations when this rule shipped.
+
+    They are the reason it now resolves `.bat` through annotated assignments,
+    walruses and variable-held extensions; treats `write_bytes` and
+    `open(..., "w").write` as launcher writes; requires `PYTHONUTF8=1` rather
+    than the bare word; and matches `print(` and `writelines(` alongside
+    `sys.stdout.write(`.
+    """
+    assert _launcher_violations(_EVASIONS[label]), (
+        f"{label!r} still evades the rule this test exists to keep honest"
+    )
 
 
 def test_the_launcher_rule_rejects_each_half_of_D_02_separately() -> None:
@@ -533,4 +653,77 @@ def test_ci_does_not_undercut_the_declared_coverage_floor() -> None:
     assert not undercuts, (
         f"ci.yml passes --fail-under={undercuts}, undercutting pyproject.toml's "
         f"fail_under={declared}. Remove the flag and let pyproject.toml govern."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Layer targets must run the layer they name.
+# ---------------------------------------------------------------------------
+
+_MAKEFILE = Path(__file__).resolve().parents[2] / "Makefile"
+
+#: The layer target that silently ran the wrong thing, and what it must reach.
+#:
+#: `make test-e2e` ran `tests/e2e/` only -- four tests, two of them `--help`
+#: invocations -- while `mcp_server/tests/test_server_e2e_stdio.py`, which
+#: spawns the server and drives a real JSON-RPC handshake over stdio, did not
+#: count as an end-to-end test. That file cannot move: the contract suite must
+#: also run standalone under `cd mcp_server && pytest`. So the target has to
+#: name it, and nothing checked that it still does.
+_TARGET_MUST_REACH = {
+    "test-e2e": ("tests/e2e/", "mcp_server/tests/test_server_e2e_stdio.py"),
+}
+
+
+def _makefile_recipe(target: str) -> str:
+    """The *commands* for one target, with comment lines stripped.
+
+    Stripping comments is load-bearing, and it took reverting the recipe to its
+    pre-fix form and watching this guard stay green to notice. The comment block
+    above the command explains *why* the target names that file, so it mentions
+    the path too -- and a check that reads the whole body is then satisfied by
+    the explanation of the thing rather than by the thing.
+    """
+    lines = _MAKEFILE.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith(f"{target}:"):
+            continue
+        body: list[str] = []
+        for following in lines[index + 1 :]:
+            if following and not following.startswith(("\t", " ", "#")):
+                break
+            if following.strip().startswith("#"):
+                continue
+            body.append(following)
+        return chr(10).join(body)
+    raise AssertionError(f"no `{target}` target found in the Makefile")
+
+
+@pytest.mark.parametrize("target", sorted(_TARGET_MUST_REACH))
+def test_a_layer_target_still_runs_the_layer_it_names(target: str) -> None:
+    """A target whose name promises more than its recipe delivers.
+
+    This is a source-reading guard for the same reason `_launcher_violations`
+    is: there is no runtime seam. `make` is not installed on every machine that
+    edits this repository, and a target that quietly stops running a file
+    produces a *green* suite with less in it -- which is how the layer named
+    "e2e" came to be the weakest layer while the strongest end-to-end test in
+    the repository sat outside it.
+    """
+    recipe = _makefile_recipe(target)
+    missing = [needed for needed in _TARGET_MUST_REACH[target] if needed not in recipe]
+
+    assert not missing, (
+        f"`make {target}` no longer names {missing}. The target's name promises "
+        "a layer its recipe does not run, and a suite that silently shrinks "
+        f"still goes green.{chr(10)}recipe:{chr(10)}{recipe}"
+    )
+
+
+def test_the_recipe_reader_can_tell_targets_apart() -> None:
+    """The falsifier: a reader that returned the whole Makefile would pass above."""
+    assert "tests/e2e/" in _makefile_recipe("test-e2e")
+    assert "tests/e2e/" not in _makefile_recipe("test-unit"), (
+        "the recipe reader is returning more than one target's body, so the "
+        "check above would pass for any target that exists"
     )

@@ -75,10 +75,24 @@ def test_the_handler_check_rejects_a_logger_that_goes_nowhere() -> None:
     message named. It had never rejected anything and could not.
     """
     goes_nowhere = logging.getLogger("probe-fallback-falsifier")
-    goes_nowhere.handlers = []
+    original = goes_nowhere.handlers
+    try:
+        # A handler that is not a StreamHandler. This is what makes the test a
+        # falsifier rather than a restatement: an earlier version asserted
+        # `logger.parent` (always truthy) and `not _stream_handlers(x)` on a
+        # list it had just emptied, so neither assertion could fail. Both were
+        # true by construction -- the same defect, in the fix for the defect.
+        goes_nowhere.handlers = [logging.NullHandler()]
 
-    assert goes_nowhere.parent, "a non-root logger always has a parent; that is the point"
-    assert not _stream_handlers(goes_nowhere)
+        assert goes_nowhere.handlers, "the logger has a handler"
+        assert not _stream_handlers(goes_nowhere), (
+            "_stream_handlers counted a NullHandler as somewhere to write. It is "
+            "the discrimination that matters: loosening it to `logger.handlers` "
+            "would make the fallback test below pass for a logger that writes "
+            "nowhere, which is exactly what it is there to catch."
+        )
+    finally:
+        goes_nowhere.handlers = original
 
 
 def test_a_record_survives_when_the_package_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

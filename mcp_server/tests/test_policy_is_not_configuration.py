@@ -117,15 +117,49 @@ def test_configuration_still_works_while_policy_does_not_budge(widened, tmp_path
 # --------------------------------------------------------------------------
 
 
+#: This package's own name, so an absolute self-import can be recognised as one.
+PACKAGE = "foundry_spike_mcp"
+
+
 def _imported_names(source: Path) -> set[str]:
+    """Every module name this file imports, by any spelling.
+
+    The dotted-tail handling is the point. An earlier version reduced
+    `ast.ImportFrom.module` to its first component, so `from . import config`
+    and `from .config import X` were caught while
+
+        from foundry_spike_mcp import config
+        from foundry_spike_mcp.config import load_planlint_config
+        import foundry_spike_mcp.config as cfg
+
+    all collapsed to `foundry_spike_mcp` and slipped past
+    `FORBIDDEN_PACKAGE_MODULES` entirely. That is not a hypothetical spelling:
+    the `scoring.py` import fallback deleted in this same branch contained
+    literally `from foundry_spike_mcp.config import (...)`, so the repository
+    has demonstrably written the form the guard could not see -- in the module
+    whose separation from `config` is the property this file exists to defend.
+    """
     tree = ast.parse(source.read_text(encoding="utf-8"))
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            names.update(alias.name.split(".")[0] for alias in node.names)
+            for alias in node.names:
+                parts = alias.name.split(".")
+                names.add(parts[0])
+                if parts[0] == PACKAGE:
+                    names.update(parts[1:])
         elif isinstance(node, ast.ImportFrom):
             if node.module:
-                names.add(node.module.split(".")[0])
+                parts = node.module.split(".")
+                names.add(parts[0])
+                # `from foundry_spike_mcp.config import X` -- the module being
+                # reached is the tail, not the package.
+                if parts[0] == PACKAGE:
+                    names.update(parts[1:])
+                # `from foundry_spike_mcp import config` -- and here it is the
+                # imported name.
+                if node.module == PACKAGE:
+                    names.update(alias.name for alias in node.names)
             if node.level:  # a relative import: `from . import config`
                 names.update(alias.name for alias in node.names)
     return names
@@ -159,14 +193,29 @@ def _relative_closure(entry: Path) -> tuple[Path, ...]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom) or not node.level:
                 continue
+            # `level` is how many directories up to start from: 1 is this
+            # package, 2 its parent, and so on.
+            base = current.parent
+            for _ in range(node.level - 1):
+                base = base.parent
+
             candidates = [node.module] if node.module else [a.name for a in node.names]
             for candidate in candidates:
                 if not candidate:
                     continue
-                head = candidate.split(".")[0]
-                sibling = current.parent / (head + ".py")
-                if sibling.is_file():
-                    queue.append(sibling)
+                # Dotted, not just the head. `from .pkg.mod import X` resolves
+                # to `pkg/mod.py`, and taking only the head looked for a
+                # `pkg.py` that does not exist -- so a subpackage was never
+                # entered. That is precisely the shape of the split this
+                # closure exists to survive: turning `guards.py` into a
+                # `guards/` package is the natural decomposition, and it was
+                # the one case the walk could not follow.
+                parts = candidate.split(".")
+                for target in (base.joinpath(*parts).with_suffix(".py"),
+                               base.joinpath(*parts) / "__init__.py"):
+                    if target.is_file():
+                        queue.append(target)
+                        break
     return tuple(sorted(seen))
 
 
@@ -210,6 +259,24 @@ def _module_assignments(tree: ast.Module) -> list[tuple[str, ast.expr]]:
     return found
 
 
+def _augmented_policy_constants(tree: ast.Module) -> list[str]:
+    """Module-level `POLICY |= ...`, which the assignment walk cannot see.
+
+    `_module_assignments` collects bindings. An augmented assignment is not a
+    binding, so `ALLOWED_VERBS = frozenset({'a'})` followed by
+    `ALLOWED_VERBS |= frozenset(EXTRA)` passed every shape check while widening
+    the list at import time -- the exact motion this file forbids, spelled with
+    a different operator.
+    """
+    return [
+        node.target.id
+        for node in tree.body
+        if isinstance(node, ast.AugAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id in POLICY_NAMES
+    ]
+
+
 def _is_written_out_pattern(node: ast.expr) -> bool:
     """True for a string literal, or `re.compile(<string literal>)`.
 
@@ -225,10 +292,23 @@ def _is_written_out_pattern(node: ast.expr) -> bool:
     is_compile = (isinstance(function, ast.Attribute) and function.attr == "compile") or (
         isinstance(function, ast.Name) and function.id == "compile"
     )
-    if not is_compile or len(node.args) != 1:
+    if not is_compile or not node.args:
         return False
-    argument = node.args[0]
-    return isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+    pattern, *flags = node.args
+    if not (isinstance(pattern, ast.Constant) and isinstance(pattern.value, str)):
+        return False
+    # A flags argument is allowed, but only as a written-out `re.X` constant.
+    # Rejecting all of them outright -- which an earlier version did, by
+    # refusing any call with more than one argument -- would false-positive on
+    # `re.compile(r"...", re.IGNORECASE)` the first time a rule needs it. A
+    # computed flag is still refused, because that is a value from somewhere
+    # else deciding what the pattern matches.
+    return all(
+        isinstance(flag, ast.Attribute)
+        and isinstance(flag.value, ast.Name)
+        and flag.value.id == "re"
+        for flag in flags
+    ) and not node.keywords
 
 
 def _policy_violations(source: str) -> list[str]:
@@ -240,16 +320,38 @@ def _policy_violations(source: str) -> list[str]:
     against conforming source has never been shown to reject anything -- which
     is the state its predecessor was in with respect to the credential table.
     """
-    violations: list[str] = []
-    for name, value in _module_assignments(ast.parse(source)):
+    tree = ast.parse(source)
+    violations: list[str] = [
+        name + " is widened by an augmented assignment after it is defined"
+        for name in _augmented_policy_constants(tree)
+    ]
+    for name, value in _module_assignments(tree):
         if name in LITERAL_FROZENSETS:
-            if not isinstance(value, ast.Call):
-                violations.append(name + " is not a frozenset(...) of literals")
+            # Three things, because checking only the outermost shape let four
+            # widenings through. `_widen_from_env({'detect'})` satisfied "is a
+            # Call whose args are containers"; so did
+            # `frozenset({'detect', *_from_env()})`, and `frozenset({A, B})`.
+            # The message claimed "not a frozenset(...) of literals" while the
+            # code checked neither the callee nor the contents.
+            if not (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id == "frozenset"
+                and len(value.args) == 1
+                and not value.keywords
+            ):
+                violations.append(name + " is not a single frozenset(...) call")
+                continue
+            container = value.args[0]
+            if not isinstance(container, (ast.Set, ast.List, ast.Tuple)):
+                violations.append(
+                    name + " is built from " + ast.dump(container)[:60] + ", not a literal"
+                )
                 continue
             violations.extend(
-                name + " is built from " + ast.dump(argument)[:60] + ", not a literal"
-                for argument in value.args
-                if not isinstance(argument, ast.Set | ast.List | ast.Tuple)
+                name + " contains " + ast.dump(element)[:60] + ", not a string literal"
+                for element in container.elts
+                if not (isinstance(element, ast.Constant) and isinstance(element.value, str))
             )
         elif name == LITERAL_RULE_TABLE:
             if not isinstance(value, ast.Tuple):
@@ -264,9 +366,16 @@ def _policy_violations(source: str) -> list[str]:
                 ):
                     violations.append(where + " is not a SecretRule(...) call")
                     continue
+                # `element.args + keywords`, not `element.args`. `SecretRule`
+                # is a NamedTuple, so the keyword spelling is idiomatic and
+                # somebody will use it -- and
+                # `SecretRule(pattern=re.compile(os.environ['P']), ...)`
+                # produced zero violations while the positional form was
+                # caught. The one sentence this file exists to defend was a
+                # refactor away from being false.
                 violations.extend(
                     where + " takes a pattern that is not written out here"
-                    for argument in element.args
+                    for argument in [*element.args, *(kw.value for kw in element.keywords)]
                     if not _is_written_out_pattern(argument)
                 )
         elif name == PUBLIC_ALIAS and not (
@@ -303,6 +412,36 @@ _MUTANTS = {
     "alias through a call": "SECRET_PATTERNS = list(_SECRET_PATTERNS)",
     "alias to something else": "SECRET_PATTERNS = _OTHER_PATTERNS",
     "verb list from a call": "ALLOWED_VERBS = frozenset(_read('VERBS'))",
+    # The six below were found by an adversarial pass over this file *after*
+    # the seven above were written and shipped. Every one of them was green.
+    # They are the reason the rule now checks the callee, the container
+    # contents, and keyword arguments, rather than only the outermost shape.
+    "callee is not frozenset": "ALLOWED_VERBS = _widen_from_env({'detect'})",
+    "starred env splat": "ALLOWED_VERBS = frozenset({'detect', *_from_env()})",
+    "elements are names, not literals": "ALLOWED_VERBS = frozenset({VERB_A, VERB_B})",
+    "rule table via keyword args": (
+        "_SECRET_PATTERNS: tuple[SecretRule, ...] = (\n"
+        "    SecretRule(pattern=re.compile(os.environ['P']), replacement='x', kind='y'),\n"
+        ")"
+    ),
+    "widened by augmented assignment": (
+        "ALLOWED_VERBS = frozenset({'validate'})\nALLOWED_VERBS |= frozenset(EXTRA)"
+    ),
+    "frozenset of a comprehension": "ALLOWED_VERBS = frozenset(v for v in _from_env())",
+}
+
+#: Conforming spellings that must NOT be reported. Grown alongside `_MUTANTS`,
+#: because every tightening is a chance to start rejecting legitimate code, and
+#: a guard that cries wolf gets an allowlist.
+_ACCEPTABLE = {
+    "flags as a written-out re constant": (
+        "_SECRET_PATTERNS: tuple[SecretRule, ...] = (\n"
+        "    SecretRule(re.compile('x', re.IGNORECASE), '[REDACTED]', 'k'),\n"
+        ")"
+    ),
+    "multi-line literal set": (
+        "ALLOWED_VERBS = frozenset({\n    'validate',\n    'diff',\n})"
+    ),
 }
 
 _CONFORMING = (
@@ -325,8 +464,20 @@ def test_the_shape_rule_rejects_a_widenable_policy_constant(label: str) -> None:
     )
 
 
-def test_the_shape_rule_accepts_policy_that_is_written_out() -> None:
-    """The other half: it must be able to return empty, or it is not a check."""
+@pytest.mark.parametrize("label", sorted(_ACCEPTABLE))
+def test_the_shape_rule_accepts_policy_that_is_written_out(label: str) -> None:
+    """The other half: it must be able to return empty, or it is not a check.
+
+    Parametrised over the spellings a tightening could plausibly break. The
+    `re.IGNORECASE` case is not hypothetical -- an earlier version of
+    `_is_written_out_pattern` refused any `re.compile` call with more than one
+    argument, which would have reported the 23rd secret rule as a violation for
+    using a flag.
+    """
+    assert not _policy_violations(_ACCEPTABLE[label])
+
+
+def test_the_shape_rule_accepts_the_canonical_conforming_module() -> None:
     assert not _policy_violations(_CONFORMING)
 
 

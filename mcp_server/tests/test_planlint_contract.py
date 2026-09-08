@@ -788,8 +788,20 @@ def test_a_missing_binary_is_tool_not_found_and_not_process_error(
 
     assert result["verdict"] == BLOCKED
     assert result["blocked_reason"] == BLOCKED_TOOL_NOT_FOUND
-    assert result["blocked_reason"] != BLOCKED_PROCESS_ERROR
     assert result["exit_code"] is None
+
+
+def test_the_two_process_failure_reasons_are_distinct_values():
+    """The near-miss above is only meaningful while these differ.
+
+    `assert blocked_reason != BLOCKED_PROCESS_ERROR` used to sit beside
+    `== BLOCKED_TOOL_NOT_FOUND` in that test, where it was entailed by its
+    neighbour and constrained nothing. The fact worth pinning is that the two
+    constants are different strings at all -- "the binary is not there" and
+    "the OS refused to run it" are different operator problems, and collapsing
+    them would silently make every disjunction over the pair vacuous.
+    """
+    assert BLOCKED_TOOL_NOT_FOUND != BLOCKED_PROCESS_ERROR
 
 
 class _DiesMidStream:

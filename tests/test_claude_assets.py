@@ -30,9 +30,26 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 CLAUDE = REPO / ".claude"
-SKILLS = sorted((CLAUDE / "skills").glob("*/SKILL.md"))
+#: Both skill trees. `.agents/skills/` is outside `.claude/` and was outside
+#: every check in this file -- frontmatter, path resolution, make-target
+#: existence, the credential scan and the absolute-path ban. That directory is
+#: exactly where the `--fail-under=80` defect lived, and nothing here would have
+#: caught its return.
+SKILLS = sorted(
+    [*(CLAUDE / "skills").glob("*/SKILL.md"), *(REPO / ".agents" / "skills").glob("*/SKILL.md")]
+)
 AGENTS = sorted((CLAUDE / "agents").glob("*.md"))
 SETTINGS = CLAUDE / "settings.json"
+
+#: Architecture prose is shared and diagram-heavy, which is exactly where a
+#: machine-specific path hides in plain sight.
+#:
+#: `docs/roadmap/` is deliberately out of scope. Those are dated records that
+#: quote transcript output verbatim, including error messages containing paths;
+#: editing one to satisfy a lint would be falsifying an archive to make a check
+#: pass, which is the trade this repository exists to refuse. The rule applies
+#: to documents that describe the system as it is now.
+ARCHITECTURE_DOCS = sorted((REPO / "docs" / "architecture").rglob("*.md"))
 
 #: Anthropic's guidance caps skill descriptions; a description longer than this
 #: is a sign the skill is doing too many things to be triggered reliably.
@@ -75,7 +92,23 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
 
 
 def test_the_repo_ships_at_least_one_skill():
-    assert SKILLS, "no .claude/skills/*/SKILL.md found"
+    assert SKILLS, "no SKILL.md found under .claude/skills/ or .agents/skills/"
+    assert {path.parent.parent.parent.name for path in SKILLS} >= {".claude", ".agents"}, (
+        "one of the two skill trees produced nothing; every check below is "
+        f"then silently skipping it. Found: {[str(p.parent) for p in SKILLS]}"
+    )
+
+
+def test_the_repo_ships_at_least_one_agent():
+    """The zero-match pin `SKILLS` had and `AGENTS` did not.
+
+    Five guards below are parametrised over `AGENTS`. pytest's default for an
+    empty parameter set is `skip`, not fail -- so emptying or renaming
+    `.claude/agents/` turns all five into skips reading "got empty parameter
+    set" and the suite stays green. That is a silent pass in the file whose job
+    is validating the shipped assets.
+    """
+    assert AGENTS, "no .claude/agents/*.md found; the agent guards are checking nothing"
 
 
 @pytest.mark.parametrize("path", SKILLS, ids=lambda p: p.parent.name)
@@ -371,6 +404,12 @@ def test_no_asset_hardcodes_an_absolute_developer_path():
     These files are shared and run on Ubuntu and Windows CI. An absolute path
     from one machine is both unreachable elsewhere and a small disclosure of
     the author's disk layout.
+
+    `docs/architecture/` is in scope, and it was not until an audit found
+    `E:\Ollama\ollama.exe` sitting in `C4.md` -- the same string this test was
+    written for, in the same repository, surviving because the file set stopped
+    at the `.claude` tree. The policy was never "skills may not do this"; it was
+    "this repository does not ship one developer's disk layout".
     """
     # `[\\/]`, with a doubled backslash, is load-bearing. An earlier draft had
     # `[\/]` -- a single one -- which inside a character class is just an
@@ -385,7 +424,7 @@ def test_no_asset_hardcodes_an_absolute_developer_path():
     assert unix_home.search("/home/someone/x"), "the unix-home pattern is broken"
 
     offenders = []
-    for path in [*SKILLS, *AGENTS, SETTINGS]:
+    for path in [*SKILLS, *AGENTS, SETTINGS, *ARCHITECTURE_DOCS]:
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if drive.search(line) or unix_home.search(line):
                 offenders.append(f"{path.name}:{number}")

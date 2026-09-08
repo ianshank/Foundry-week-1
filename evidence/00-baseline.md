@@ -28,7 +28,26 @@ ms-windows-ai-studio.windows-ai-studio@1.6.11
 
 ## Done-when
 
-- [ ] Toolkit version file written (`evidence/00-toolkit-version.txt`)
-- [ ] Dialect card captured (`evidence/00-dialect-card.json`)
-- [ ] planlint validate exit recorded (0 or 1)
+- [x] Toolkit version file written (`evidence/00-toolkit-version.txt`)
+- [x] Dialect card captured (`evidence/00-dialect-card.json`)
+- [x] planlint validate exit recorded (0 or 1)
 - [ ] Demo eval exit recorded (0)
+
+Three of four. The fourth is **blocked externally, not skipped**, and the
+distinction matters because everything downstream of `score_run` depends on it.
+
+`make baseline` recorded the demo eval as exit **1**, not 0, and
+`evidence/00-demo-eval.txt` carries the traceback verbatim:
+
+```
+ValueError: judge_calibration.calibration_artifact_id is required to gate on
+['helpfulness']: a judge's participation in gating must be traceable to the
+calibration run that authorised it
+```
+
+The eval harness is refusing to gate on a judge whose calibration it cannot
+trace — which is the same class of refusal this spike's wrapper exists to make,
+arriving from the other side. Whether that id is a config field with a real
+artifact behind it, or something only a calibration run inside the harness can
+produce, is not known. If it is the latter, that is runbook stop condition 3.
+See `evidence/05-verdict.md` §4 and `decisions/0002-pinned-sink-schema.md`.

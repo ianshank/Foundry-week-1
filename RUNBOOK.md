@@ -4,7 +4,7 @@
 **Azure spend:** zero. Everything here runs on GitHub-hosted models, Ollama, or local ONNX.
 **Blast radius:** one throwaway repo. No commits to `Mango_Code_Agent-Harness`, `Agents`, or `planlint` this week.
 
-**Exit artifact:** a decision-log row that says *keep as sidecar* or *drop*, plus four evidence files.
+**Exit artifact:** a decision-log row that says *keep as sidecar*, *bench only* or *drop*, plus four evidence files.
 
 > Deviations from the original draft are marked **[amended]** with the reason.
 > Three of them are defects that would have failed at run time; the rest are
@@ -193,10 +193,17 @@ Implementation: `mcp_server/src/foundry_spike_mcp/scoring.py`.
   reported as `"unreadable:0.73"` rather than coerced. Guessing a boolean here
   is the same defect wearing a different hat.
 
-The exact sink schema is **not** pinned yet: `_collect_scorers` walks the
-artifact for any object carrying a recognised verdict key and records where it
-found it. Pin the real shape in session 3 against a real artifact and narrow
-the walk. An unrecognised artifact returns BLOCKED, never an empty pass.
+The exact sink schema **is** pinned, as of 2026-09-08. `_collect_scorers`
+requires a root `results` list whose elements each carry a `scorer` name and a
+three-valued `passed`; anything else returns BLOCKED with
+`unrecognized_artifact_schema`, never an empty pass. The shape-tolerant walk
+this paragraph used to describe has been removed.
+
+It was pinned **without a real artifact to pin it against**, which is a live
+risk rather than a settled question — `decisions/0002-pinned-sink-schema.md`
+records the shape, the objection that lost, and the condition under which the
+pin gets widened. So session 3's job here is not to narrow the walk: it is to
+produce one real artifact and check it against the pin.
 
 **3.4** Refusals baked into the server, not the prompt —
 `mcp_server/src/foundry_spike_mcp/guards.py`:

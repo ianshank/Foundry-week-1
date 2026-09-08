@@ -67,10 +67,12 @@ Stated rather than left for someone to discover:
   swap a symlink in between. Not mitigated: everything here runs as one
   developer on one machine against their own repositories, and closing it would
   need an fd-based API planlint does not offer.
-- **GitHub Actions use floating major tags** (`@v4`, `@v5`, `@v2`) rather than
-  commit SHAs. A compromised tag would run with `contents: read` and the
-  default token. Accepted for a spike; SHA-pin before this pattern is copied
-  into anything with write permissions or secrets.
+- **GitHub Actions are pinned to patch tags, not commit SHAs**
+  (`checkout@v4.1.7`, `setup-python@v5.1.1`, `gitleaks-action@v2.3.6`). A tag is
+  a mutable ref whoever owns the action can move, so this is narrower than a
+  floating major and still short of immutable. A compromised tag would run with
+  `contents: read` and the default token. Accepted for a spike; SHA-pin before
+  this pattern is copied into anything with write permissions or secrets.
 - **Transitive dependencies are unpinned.** One direct dependency (`mcp`,
   bounded `>=1.2,<3`) with no lockfile, so CI resolves fresh each run. A
   transitive break appears as an unexplained red rather than a diff.
