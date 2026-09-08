@@ -32,6 +32,9 @@ __pycache__/
 .coverage
 .coverage.*
 coverage.xml
+# `coverage json` output. Not previously ignored, and it becomes a routine
+# build artifact once a per-file floor reads it.
+coverage.json
 htmlcov/
 .venv/
 venv/
@@ -41,7 +44,12 @@ build/
 .uv/
 .DS_Store
 .eval-runs/
-bad_target/
-mock_findings/
-mock_pass/
+# `bad_target/`, `mock_findings/` and `mock_pass/` used to be ignored here.
+# They were the self-check's fixtures, and ignoring them is why the FINDINGS
+# case went undemonstrated for two merges and was then hand-edited to claim it
+# had landed: no reviewer could open the thing the evidence depended on, and
+# the directory was an empty tree planlint correctly found nothing in.
+#
+# The fixtures now live tracked under `configs/fixtures/planlint/`. A fixture a
+# reviewer cannot open is not evidence.
 scratch/
