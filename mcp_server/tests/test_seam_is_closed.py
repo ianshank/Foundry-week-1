@@ -21,10 +21,45 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "foundry_spike_mcp"
 #: caller and started being a coupling.
 FORBIDDEN_ROOTS = {"openspec_graph", "openspec", "planlint", "eval_harness", "evalharness"}
 
+#: The two tools' own modules. Kept as a name because it is what the stop
+#: condition is *about*, but it is no longer what the checks below run over.
 TOOL_MODULES = ["planlint.py", "scoring.py", "guards.py", "verdicts.py"]
+
+#: Every module in the package, derived rather than typed out.
+#:
+#: `TOOL_MODULES` was the parametrisation for all three invariants below, which
+#: left `__init__.py`, `__main__.py`, `config.py`, `logging_setup.py` and
+#: `server.py` unmeasured by every one of them -- including the runbook's stop
+#: condition 3. A new module added tomorrow would have been invisible in the
+#: same way, and a hardcoded list is exactly the thing nobody remembers to
+#: update. Globbing means the audit follows the package.
+ALL_MODULES = tuple(sorted(path.name for path in SRC.glob("*.py")))
+
+#: Exempt from the SDK check *only*, with the reason carried into the diff --
+#: same shape as `tests/regression/test_coverage_floor.py::ALLOWED_BELOW`.
+SDK_EXEMPT = {
+    "server.py": (
+        "the transport, and it reaches the SDK through `importlib.import_module` "
+        "inside `build_server`. A static import check finds no `mcp` here and "
+        "would pass -- vacuously, asserting the opposite of the truth. The real "
+        "guard on this module is CI's `transport` job."
+    ),
+}
+SDK_CHECKED = tuple(module for module in ALL_MODULES if module not in SDK_EXEMPT)
 
 
 def _imported_roots(path: Path) -> set[str]:
+    """Top-level packages this module imports absolutely.
+
+    `node.level == 0` filters relative imports out, and it is load-bearing now
+    that these checks run over the whole package rather than four leaf modules.
+    `planlint` is *both* a member of `FORBIDDEN_ROOTS` and a sibling module, so
+    `from .planlint import ...` -- which `__init__.py`, `__main__.py` and
+    `server.py` all do -- reads as the forbidden external import unless the
+    level is checked. Dropping this condition produces three immediate false
+    positives, each one accusing the package of the coupling that would end the
+    spike.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     roots: set[str] = set()
     for node in ast.walk(tree):
@@ -35,7 +70,23 @@ def _imported_roots(path: Path) -> set[str]:
     return roots
 
 
-@pytest.mark.parametrize("module", TOOL_MODULES)
+def test_the_module_list_is_not_empty_and_still_finds_the_tools():
+    """Looks like bookkeeping and is not.
+
+    `ALL_MODULES` is a glob, and a glob that matches nothing turns all three
+    parametrisations below into zero test cases -- which pytest reports as
+    green. Same reasoning as `assert one_shot or spawned` further down: an
+    audit has to be shown to be looking at something.
+    """
+    assert set(TOOL_MODULES) <= set(ALL_MODULES), (
+        f"a tool module was renamed or moved: {sorted(set(TOOL_MODULES) - set(ALL_MODULES))}"
+    )
+    assert set(SDK_EXEMPT) <= set(ALL_MODULES), (
+        "an SDK exemption names a module that no longer exists; delete it"
+    )
+
+
+@pytest.mark.parametrize("module", ALL_MODULES)
 def test_tools_do_not_import_the_systems_they_wrap(module):
     offending = _imported_roots(SRC / module) & FORBIDDEN_ROOTS
     assert not offending, (
@@ -44,10 +95,13 @@ def test_tools_do_not_import_the_systems_they_wrap(module):
     )
 
 
-@pytest.mark.parametrize("module", TOOL_MODULES)
+@pytest.mark.parametrize("module", SDK_CHECKED)
 def test_tool_logic_does_not_depend_on_the_mcp_sdk(module):
     """The contract under test must be testable without a transport."""
-    assert "mcp" not in _imported_roots(SRC / module)
+    assert "mcp" not in _imported_roots(SRC / module), (
+        f"{module} imports the MCP SDK. Only `server.py` may, and it does so "
+        "dynamically -- see SDK_EXEMPT."
+    )
 
 
 def _docstring_nodes(tree: ast.AST) -> set[int]:
@@ -67,7 +121,7 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
     return ids
 
 
-@pytest.mark.parametrize("module", TOOL_MODULES)
+@pytest.mark.parametrize("module", ALL_MODULES)
 def test_no_fourth_verdict_string_can_be_returned(module):
     """`UNKNOWN` is a state the agent instructions define no behaviour for.
 
