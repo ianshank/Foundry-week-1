@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -28,7 +29,21 @@ def test_e2e_scan_evidence_cli_clean_execution():
         cwd=str(REPO_ROOT),
     )
     assert result.returncode == 0
-    assert "0 hit(s)" in result.stdout or "scanned" in result.stdout
+
+    # Read both numbers rather than asserting a substring.
+    #
+    # This was `"0 hit(s)" in stdout or "scanned" in stdout`. Both arms come
+    # from the *same* printed line -- `scanned {n} file(s), {m} hit(s)` -- so
+    # the disjunction reduced to "the summary line was printed", and passed for
+    # `scanned 0 file(s), 0 hit(s)`: the scan-nothing case that
+    # `scan_evidence.py`'s own S-01 fix exists to refuse. An end-to-end test
+    # that cannot tell a clean scan from an absent one is checking that the
+    # program printed something.
+    summary = re.search(r"scanned (\d+) file\(s\), (\d+) hit\(s\)", result.stdout)
+    assert summary, f"no scan summary line in stdout: {result.stdout!r}"
+    files, hits = int(summary.group(1)), int(summary.group(2))
+    assert files > 0, "the scan reported success over zero files"
+    assert hits == 0, f"the repository's own evidence scan found {hits} credential hit(s)"
 
 
 def test_e2e_promote_trace_cli(tmp_path: Path):
@@ -93,4 +108,11 @@ def test_e2e_mcp_server_module_help():
         env={**os.environ, "PYTHONPATH": pythonpath},
     )
     assert result.returncode == 0
-    assert "foundry-spike-mcp" in result.stdout.lower() or "usage:" in result.stdout.lower()
+
+    # The real contract, not "argparse printed something". The disjunction this
+    # replaces was satisfied by the bare program name, which every argparse
+    # usage line contains -- so it could not have detected a subcommand being
+    # dropped, which is the only thing worth checking here.
+    out = result.stdout.lower()
+    assert "serve" in out, "the `serve` subcommand is no longer advertised"
+    assert "selfcheck" in out, "the `selfcheck` subcommand is no longer advertised"
