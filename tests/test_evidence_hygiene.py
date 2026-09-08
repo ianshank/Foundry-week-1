@@ -325,7 +325,14 @@ def test_a_credential_outside_the_repo_still_fails_closed(tmp_path, capsys):
 
 
 def test_a_missing_absolute_target_is_skipped_not_a_traceback(tmp_path, capsys):
-    assert main([str(tmp_path / "nope")]) == 0
+    """Skipped and reported, not crashed -- but not reported as a pass either.
+
+    This asserted `== 0`, which conflated "did not crash" with "succeeded".
+    They are different requirements and only the first is in this test's name.
+    A gate that opened no files must not exit 0; that is S-01, guarded in
+    `tests/regression/test_secret_gate_integrity.py`.
+    """
+    assert main([str(tmp_path / "nope")]) == 2
     assert "does not exist" in capsys.readouterr().out
 
 

@@ -160,10 +160,36 @@ def test_scan_main_exits_nonzero_and_names_the_file_on_a_hit(tmp_path, monkeypat
 
 
 def test_scan_main_skips_a_missing_directory_without_failing(tmp_path, monkeypatch, capsys):
-    """A capture directory that does not exist yet is normal in session 1."""
+    """A capture directory that does not exist yet is normal in session 1.
+
+    That concern is real and is preserved by the test below: when *some*
+    target has files, a missing sibling does not fail the run, which is the
+    session-1 case (`traces/` absent while `evidence/` already has content).
+
+    What changed is the case where nothing at all was opened. Skipping is
+    still not a traceback, but it is also no longer a pass -- exit 2 means
+    "could not look", as distinct from 1, "looked and found a credential".
+    """
     monkeypatch.setattr(scan_evidence, "REPO", tmp_path)
-    assert scan_evidence.main(["nope"]) == 0
+    assert scan_evidence.main(["nope"]) == 2
     assert "skip" in capsys.readouterr().out
+
+
+def test_scan_main_passes_when_one_target_is_missing_but_another_has_files(
+    tmp_path, monkeypatch, capsys
+):
+    """The session-1 case the test above used to cover, stated directly.
+
+    `make scan` passes five default targets and early sessions have only some
+    of them. A missing `traces/` must not fail a run that actually scanned
+    `evidence/` -- the exit-2 path is for having opened nothing at all.
+    """
+    monkeypatch.setattr(scan_evidence, "REPO", tmp_path)
+    (tmp_path / "evidence").mkdir()
+    (tmp_path / "evidence" / "notes.md").write_text("clean\n", encoding="utf-8")
+
+    assert scan_evidence.main(["evidence", "traces"]) == 0
+    assert "scanned 1 file(s), 0 hit(s)" in capsys.readouterr().out
 
 
 # ------------------------------------------------------------ promote_trace

@@ -38,6 +38,19 @@ DEFAULT_TARGETS = ("evidence", "traces", "snippets", "configs", "decisions")
 SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".gz", ".webp"}
 MAX_BYTES = 16 * 1024 * 1024
 
+#: How much of a matching rule's regex is echoed beside a hit. Named rather
+#: than left as a bare slice, following `config.CONFIG_ERROR_DETAIL_LIMIT`'s
+#: precedent: deliberately not configurable -- it is display width, and an
+#: operator who wants the whole pattern can read `guards.SECRET_PATTERNS`.
+PATTERN_PREVIEW_CHARS = 48
+
+#: `main` returns this when it could not look, as distinct from 1, which means
+#: it looked and found a credential. Same three-valued shape as the probe CLI
+#: and as planlint itself: 0 clean, 1 findings, 2 could not look. A gate that
+#: spells "found nothing" and "opened nothing" with the same byte is the
+#: failure this repository exists to detect.
+EXIT_COULD_NOT_LOOK = 2
+
 
 def display(path: Path) -> str:
     """Render a path for the operator: relative inside the repo, absolute outside.
@@ -78,30 +91,60 @@ def scan_file(path: Path) -> list[tuple[int, str, str]]:
     except OSError as error:
         return [(0, "unreadable", str(error))]
 
+    # Matched against the whole text, not line by line.
+    #
+    # `SECRET_PATTERNS` contains rules that span newlines by construction: the
+    # PEM block is `-----BEGIN...-----[\s\S]*?-----END...-----`, and the
+    # authorization rule uses `\s+` specifically so a header whose credential
+    # wrapped onto the next line is still caught -- `guards.py` records that
+    # second one as a fixed defect. Splitting the text before matching made
+    # every such rule dead on arrival here, so `redact()` (which scans whole
+    # text) and `scan_file()` disagreed about what a secret is. A PEM private
+    # key in a capture scanned clean and `promote_trace` copied it into
+    # tracked `traces/`, in a public repository.
+    #
+    # The line number is recovered from the match offset rather than from a
+    # loop counter, because it is how a reviewer finds the thing to redact.
     hits: list[tuple[int, str, str]] = []
-    for number, line in enumerate(text.splitlines(), start=1):
-        for rule in SECRET_PATTERNS:
-            if rule.pattern.search(line):
-                # Report the shape and the location, never the value.
-                #
-                # `rule.kind`, not a string scraped out of the replacement. The
-                # category used to be derived by stripping `[REDACTED:...]` off
-                # the replacement text, which held only while every replacement
-                # was a bare marker. The rules that keep context -- the ones
-                # replacing with `\1: [REDACTED]` so a redacted header still
-                # names its header -- printed as the literal `\1: [REDACTED`.
-                hits.append((number, rule.kind, rule.pattern.pattern[:48]))
-    return hits
+    for rule in SECRET_PATTERNS:
+        for match in rule.pattern.finditer(text):
+            # Report the shape and the location, never the value.
+            #
+            # `rule.kind`, not a string scraped out of the replacement. The
+            # category used to be derived by stripping `[REDACTED:...]` off
+            # the replacement text, which held only while every replacement
+            # was a bare marker. The rules that keep context -- the ones
+            # replacing with `\1: [REDACTED]` so a redacted header still
+            # names its header -- printed as the literal `\1: [REDACTED`.
+            number = text.count("\n", 0, match.start()) + 1
+            hits.append((number, rule.kind, rule.pattern.pattern[:PATTERN_PREVIEW_CHARS]))
+    return sorted(hits)
+
+
+def _resolve_target(name: str) -> Path:
+    """A relative name means "in this repo"; an absolute path means itself.
+
+    `REPO / name` alone does not deliver the second half of that promise on
+    Windows: a drive-less rooted path like `/tmp/export-for-review` -- the
+    example this module's own docstring gives -- keeps the repository's drive
+    letter and becomes `E:\\tmp\\export-for-review`. The gate then scanned a
+    path the operator never named, found it absent, and (before the exit-code
+    fix below) reported success.
+    """
+    candidate = Path(name)
+    return candidate if candidate.is_absolute() else REPO / name
 
 
 def main(argv: list[str]) -> int:
-    targets = [REPO / name for name in (argv or DEFAULT_TARGETS)]
+    targets = [_resolve_target(name) for name in (argv or DEFAULT_TARGETS)]
     findings = 0
     scanned = 0
+    missing = 0
 
     for target in targets:
         if not target.exists():
             print(f"skip  {display(target)} (does not exist)")
+            missing += 1
             continue
         paths = [target] if target.is_file() else sorted(p for p in target.rglob("*") if p.is_file())
         for path in paths:
@@ -117,6 +160,23 @@ def main(argv: list[str]) -> int:
     if findings:
         print("Redact these before committing. Nothing here should reach a PR.")
         return 1
+    if scanned == 0 and missing:
+        # Looked at nothing, and was asked to look somewhere that is not there.
+        #
+        # `make scan`, `make secrets`, the pre-commit hook and `promote_trace`
+        # all gate on this exit code. A shallow checkout, a renamed directory
+        # or a typo'd target used to print "scanned 0 file(s), 0 hit(s)" and
+        # exit 0 -- a green credential gate that had opened nothing.
+        #
+        # Guarded on `missing` as well as `scanned` so that a genuinely empty
+        # but present directory still passes: having looked and found nothing
+        # is success, and a gate nobody can satisfy is a gate everybody
+        # bypasses.
+        print(
+            f"{missing} requested target(s) did not exist and nothing was scanned. "
+            "This is not a pass -- fix the path or the checkout."
+        )
+        return EXIT_COULD_NOT_LOOK
     return 0
 
 

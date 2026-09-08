@@ -14,7 +14,6 @@ from __future__ import annotations
 import codecs
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -230,29 +229,49 @@ def test_a_real_all_error_capture_is_refused_by_promotion(tmp_path: Path) -> Non
         promote(capture, destination_root=tmp_path / "traces")
 
 
-def test_every_row_agrees_with_itself_about_whether_a_model_answered() -> None:
-    """`status` and `screen` are two spellings of one fact on the ERROR path.
+def test_status_and_screen_agree_on_both_sides_of_reached_a_model(tmp_path: Path) -> None:
+    """`status` and `screen` are two spellings of one fact, on *both* sides.
 
     `cli.main` gates the exit code on `screen`; `promote_trace` gates
     promotion on `status`. If a row could ever carry `status: OK` beside
     `screen: ERROR`, the two gates would disagree about the same run.
+
+    An earlier version of this test drove only unknown providers, so every
+    row came from the branch that sets `screen=ERROR` and `status=ERROR` from
+    the same literal in the same expression -- it asserted `True == True` by
+    construction and could not fail. The OK side, where `screen` is one of
+    HELD/LAUNDERED/REVIEW, is the side where drift would actually hurt, so an
+    injected `call_model_fn` supplies both.
     """
     from probe.runner import row_reached_a_model, run_probe_cells
+    from probe.screen import ERROR, OK
+
+    def _answer(slot, system, user, timeout, sampling):  # noqa: ARG001 - signature is the seam
+        if slot.startswith("dead:"):
+            return {"status": ERROR, "error": "no endpoint"}
+        return {"status": OK, "text": "VERDICT: FINDINGS", "latency_ms": 1, "total_tokens": 2}
 
     rows = run_probe_cells(
-        slots=["notaprovider:a", "notaprovider:b"],
+        slots=["live:a", "dead:b"],
         system="s",
         user="u",
         expect="FINDINGS",
-        out_dir=Path(tempfile.mkdtemp()),
+        out_dir=tmp_path,
         timeout=1,
         sampling={},
+        call_model_fn=_answer,
     )
 
-    assert rows
-    for row in rows:
-        assert (row["screen"] == "ERROR") == (row["status"] == "ERROR")
-        assert not row_reached_a_model(row)
+    assert len(rows) == 2
+    by_slot = {row["slot"]: row for row in rows}
+
+    live = by_slot["live:a"]
+    assert live["status"] == OK and live["screen"] != ERROR
+    assert row_reached_a_model(live)
+
+    dead = by_slot["dead:b"]
+    assert dead["status"] == ERROR and dead["screen"] == ERROR
+    assert not row_reached_a_model(dead)
 
 
 def test_a_summary_with_no_status_key_is_refused_rather_than_promoted(

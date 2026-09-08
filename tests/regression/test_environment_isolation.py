@@ -33,14 +33,27 @@ pytestmark = pytest.mark.regression
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_SRC = _REPO_ROOT / "mcp_server" / "src" / "foundry_spike_mcp"
 
-#: Values chosen because each one is known to change a result if it leaks.
-#: Not arbitrary: every entry here was measured failing before the isolation
-#: fixtures were widened, and the comment says which way it failed.
-POISON = {
-    "EVAL_MAX_ARTIFACT_BYTES": "1",      # 18 failures in test_scoring.py
-    "FOUNDRY_SPIKE_STDOUT_LIMIT": "1",   # test_exit_two_is_blocked_not_pass
-    "PROBE_TIMEOUT": "abc",              # three D-03 guards falsely green
-}
+def _poison() -> dict[str, str]:
+    """Values known to change a result if they leak, keyed on the real names.
+
+    Keyed on the `ENV_*` constants rather than string literals, and the reason
+    is the same one this file's other test enforces on `src/`: a literal here
+    that drifts from the name the code reads poisons a variable nothing looks
+    at, the child suite passes, and **this test goes green having injected
+    nothing**. Every other guard in this file fails safe; that one would fail
+    silent, which is the worse direction.
+
+    Each value was measured failing before the isolation fixtures were
+    widened; the comments record which way.
+    """
+    from foundry_spike_mcp.config import ENV_EVAL_MAX_ARTIFACT_BYTES, ENV_STDOUT_LIMIT
+    from probe.config import ENV_PROBE_TIMEOUT
+
+    return {
+        ENV_EVAL_MAX_ARTIFACT_BYTES: "1",   # 18 failures in test_scoring.py
+        ENV_STDOUT_LIMIT: "1",              # test_exit_two_is_blocked_not_pass
+        ENV_PROBE_TIMEOUT: "abc",           # three D-03 guards falsely green
+    }
 
 #: The files the poison above actually reaches. Scoped rather than the whole
 #: suite so this stays a guard and not a second full run.
@@ -60,17 +73,27 @@ def test_a_poisoned_shell_cannot_change_a_contract_result() -> None:
     protecting -- by the time this test body runs, the fixture has already
     cleaned the environment it would be asserting about.
     """
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *_TARGETS],
-        cwd=_REPO_ROOT,
-        env={**os.environ, **POISON},
-        capture_output=True,
-        text=True,
-    )
+    poison = _poison()
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *_TARGETS],
+            cwd=_REPO_ROOT,
+            env={**os.environ, **poison},
+            capture_output=True,
+            text=True,
+            # Bounded because one of the targets deliberately spawns processes
+            # that never exit. Without a ceiling, a deadlocked child holds the
+            # parent until GitHub's six-hour job limit instead of failing in
+            # five minutes -- and every other subprocess boundary in this repo
+            # treats a missing timeout as a defect.
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("the poisoned child suite hung; it should finish well inside 300s")
 
     assert result.returncode == 0, (
         "A poisoned shell changed the result of the contract suite.\n"
-        f"Injected: {POISON}\n\n" + result.stdout[-4000:]
+        f"Injected: {poison}\n\n" + result.stdout[-4000:]
     )
 
 
