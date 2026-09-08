@@ -188,36 +188,49 @@ def test_runner_and_summary_generation(tmp_path):
     assert "HELD" in table
 
 
-def test_verifier_probe_fallback_import():
-    """Verify verifier_probe fallback imports when scripts.probe is unavailable."""
-    import importlib
-    import sys
+def test_the_facade_exports_exactly_what_the_package_does():
+    """`verifier_probe` is advertised as the backwards-compatible facade.
 
-    orig_scripts_probe = sys.modules.get("scripts.probe")
-    orig_vp = sys.modules.get("verifier_probe")
-    orig_scripts_vp = sys.modules.get("scripts.verifier_probe")
+    It was not one. `probe.__all__` listed `build_parser`, `build_summary`,
+    `format_report_table` and `run_probe_cells`; the facade neither imported
+    nor re-exported them, so `from verifier_probe import build_parser` raised
+    `ImportError` while the package advertised the name. And the facade
+    listed `urllib`, which `probe` does not export -- a facade that *adds*
+    surface is not a facade.
 
-    try:
-        sys.modules["scripts.probe"] = None  # type: ignore[assignment]  # Force ModuleNotFoundError on scripts.probe
-        sys.modules.pop("verifier_probe", None)
-        sys.modules.pop("scripts.verifier_probe", None)
+    This matters more than a tidy `__all__`: `verifier_probe` is the name in
+    `docs/architecture/C4.md`, two Makefile targets, two shipped skills and
+    one shipped agent. It is the published interface, and it was a strict
+    subset of the thing it fronts.
 
-        import verifier_probe
+    Three checks, because the first two alone allow a name to be listed and
+    never imported -- which is the shape the drift actually had.
+    """
+    import probe
+    import verifier_probe
 
-        importlib.reload(verifier_probe)
-        assert hasattr(verifier_probe, "screen")
-        assert hasattr(verifier_probe, "main")
-        assert hasattr(verifier_probe, "call_model")
-        assert hasattr(verifier_probe, "_post")
-    finally:
-        if orig_scripts_probe is not None:
-            sys.modules["scripts.probe"] = orig_scripts_probe
-        else:
-            sys.modules.pop("scripts.probe", None)
-        if orig_vp is not None:
-            sys.modules["verifier_probe"] = orig_vp
-        if orig_scripts_vp is not None:
-            sys.modules["scripts.verifier_probe"] = orig_scripts_vp
+    missing = sorted(set(probe.__all__) - set(verifier_probe.__all__))
+    assert not missing, f"probe exports {missing}; the facade does not"
+
+    extra = sorted(set(verifier_probe.__all__) - set(probe.__all__))
+    assert not extra, (
+        f"the facade exports {extra} that `probe` does not. A facade that "
+        "adds surface is not a facade."
+    )
+
+    unbound = [name for name in verifier_probe.__all__ if not hasattr(verifier_probe, name)]
+    assert not unbound, f"listed in __all__ and never imported: {unbound}"
+
+
+def test_the_facade_repo_root_is_the_package_repo_root():
+    """`REPO` is on the backwards-compatibility list and is bound twice --
+    once locally at module top, then again by the names imported from
+    `probe.config` (`parents[2]` there against `parents[1]` here, resolving to
+    the same directory). Pinned so a reordering cannot silently change it."""
+    import probe
+    import verifier_probe
+
+    assert verifier_probe.REPO == probe.REPO
 
 
 def test_verifier_probe_facade_helpers(monkeypatch):

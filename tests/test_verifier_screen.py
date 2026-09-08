@@ -8,6 +8,7 @@ after the fact.
 from __future__ import annotations
 
 import json
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -241,9 +242,21 @@ def test_a_non_utf8_response_body_does_not_raise(monkeypatch):
         def __exit__(self, *_):
             return False
 
-    monkeypatch.setattr(
-        verifier_probe.urllib.request, "urlopen", lambda *_a, **_k: _Response()
-    )
+    # Patched on the stdlib module directly, not through `verifier_probe`.
+    #
+    # `verifier_probe.urllib.request is urllib.request` was True, so the two
+    # were the same object and this is the identical patch -- but the facade
+    # only carried `import urllib` so that the attribute lookup would resolve,
+    # which made a stdlib module part of its published `__all__`.
+    #
+    # Deliberately NOT retargeted to `verifier_probe._post`. Patching `_post` to
+    # raise keeps both assertions in this file green while `probe.client._post`
+    # is never entered -- `client.py` catches both exception types and formats a
+    # message containing both asserted substrings, so the tests cannot tell the
+    # difference. The point of these two is that `_post` runs *for real*: this
+    # one exercises `read().decode("utf-8", errors="replace")` on undecodable
+    # bytes, and its sibling below exercises `json.loads` raising RecursionError.
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_k: _Response())
     row = verifier_probe.call_model("ollama:x", "sys", "user", timeout=1)
     assert row["status"] == verifier_probe.ERROR
     assert "JSON" in row["error"]
@@ -266,9 +279,7 @@ def test_deeply_nested_response_json_does_not_raise(monkeypatch):
         def __exit__(self, *_):
             return False
 
-    monkeypatch.setattr(
-        verifier_probe.urllib.request, "urlopen", lambda *_a, **_k: _Response()
-    )
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_k: _Response())
     row = verifier_probe.call_model("ollama:x", "sys", "user", timeout=1)
     assert row["status"] == verifier_probe.ERROR
     assert "RecursionError" in row["error"]

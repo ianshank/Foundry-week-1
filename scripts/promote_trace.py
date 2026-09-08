@@ -24,31 +24,34 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+# Load-bearing, and the reason the fallback arms below it are gone.
+#
+# `make promote` and `make probe` invoke these scripts by bare path
+# (`$(PY) scripts/promote_trace.py ...`), and for a script run `sys.path[0]` is
+# the *script's* directory -- `scripts/` -- not the repository root. This insert
+# is what makes the `scripts.`-prefixed imports resolve there, which is what
+# makes the `except ImportError` arms unreachable.
+#
+# The two are mutually redundant: delete either and the other carries it, delete
+# both and `make promote` breaks. Verified from a foreign cwd with a clean
+# PYTHONPATH -- without this insert the primary arm raises
+# `No module named 'scripts.scan_evidence'`.
+#
+# The `scripts.` spelling is the one mypy resolves, because `mypy_path` has the
+# repo root and not `scripts/` (adding the latter would make every script a
+# duplicate module). So the prefixed arm is the one that has to survive.
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
-if str(REPO / "scripts") not in sys.path:
-    sys.path.insert(0, str(REPO / "scripts"))
 
-try:
-    from scripts.scan_evidence import scan_file
-except ImportError:
-    from scan_evidence import scan_file  # type: ignore[import-not-found,no-redef]
-
-# The single reader of "did a model answer", shared with `probe.cli`'s exit
-# code so the two gates cannot drift apart. Imported rather than
-# reimplemented, for the same reason `scan_file` above is imported rather than
-# reimplemented: two definitions of one fact drift, and the one that drifts is
-# the one nobody reads.
+# `no_model_answered` is the single reader of "did a model answer", shared with
+# `probe.cli`'s exit code so the two gates cannot drift apart. Imported rather
+# than reimplemented, for the same reason `scan_file` is: two definitions of one
+# fact drift, and the one that drifts is the one nobody reads.
 #
-# Same dual spelling as `scan_file`, and for the same reason: `scripts.` is
-# the form mypy resolves (its `mypy_path` has the repo root, not `scripts/`,
-# because adding the latter would make every script a duplicate module), while
-# the bare form is what resolves at runtime when only `scripts/` is on the
-# path -- which is how `make probe` and the Docker stages invoke these.
-try:
-    from scripts.probe.runner import no_model_answered
-except ImportError:  # pragma: no cover - exercised by the bare-path invocations
-    from probe.runner import no_model_answered  # type: ignore[import-not-found,no-redef]
+# E402 is unavoidable and deliberate -- these cannot precede the `sys.path`
+# insert above that makes them resolvable. Same as `scan_evidence.py`.
+from scripts.probe.runner import no_model_answered  # noqa: E402
+from scripts.scan_evidence import scan_file  # noqa: E402
 
 TRACES = REPO / "traces"
 SKIP_NAMES = {"__pycache__", ".DS_Store"}
