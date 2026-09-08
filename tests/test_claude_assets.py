@@ -30,7 +30,14 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 CLAUDE = REPO / ".claude"
-SKILLS = sorted((CLAUDE / "skills").glob("*/SKILL.md"))
+#: Both skill trees. `.agents/skills/` is outside `.claude/` and was outside
+#: every check in this file -- frontmatter, path resolution, make-target
+#: existence, the credential scan and the absolute-path ban. That directory is
+#: exactly where the `--fail-under=80` defect lived, and nothing here would have
+#: caught its return.
+SKILLS = sorted(
+    [*(CLAUDE / "skills").glob("*/SKILL.md"), *(REPO / ".agents" / "skills").glob("*/SKILL.md")]
+)
 AGENTS = sorted((CLAUDE / "agents").glob("*.md"))
 SETTINGS = CLAUDE / "settings.json"
 
@@ -75,7 +82,23 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
 
 
 def test_the_repo_ships_at_least_one_skill():
-    assert SKILLS, "no .claude/skills/*/SKILL.md found"
+    assert SKILLS, "no SKILL.md found under .claude/skills/ or .agents/skills/"
+    assert {path.parent.parent.parent.name for path in SKILLS} >= {".claude", ".agents"}, (
+        "one of the two skill trees produced nothing; every check below is "
+        f"then silently skipping it. Found: {[str(p.parent) for p in SKILLS]}"
+    )
+
+
+def test_the_repo_ships_at_least_one_agent():
+    """The zero-match pin `SKILLS` had and `AGENTS` did not.
+
+    Five guards below are parametrised over `AGENTS`. pytest's default for an
+    empty parameter set is `skip`, not fail -- so emptying or renaming
+    `.claude/agents/` turns all five into skips reading "got empty parameter
+    set" and the suite stays green. That is a silent pass in the file whose job
+    is validating the shipped assets.
+    """
+    assert AGENTS, "no .claude/agents/*.md found; the agent guards are checking nothing"
 
 
 @pytest.mark.parametrize("path", SKILLS, ids=lambda p: p.parent.name)

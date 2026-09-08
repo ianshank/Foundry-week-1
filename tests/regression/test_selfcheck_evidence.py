@@ -269,6 +269,7 @@ def test_no_recorded_target_anywhere_leaks_an_absolute_in_repo_path() -> None:
 # them were red on this repository when they were written.
 # ---------------------------------------------------------------------------
 
+_NL = chr(10)
 _DOC_ROOTS = (_REPO / "evidence", _REPO / "decisions")
 
 #: A `- [x]` box, and a table cell that says nothing was actually done.
@@ -295,6 +296,58 @@ def _without_comments(text: str) -> str:
     document with them stripped.
     """
     return _HTML_COMMENT.sub("", text)
+
+
+#: Synthetic documents for the falsifiers below. The four rules above shipped
+#: without any -- while every other static rule in this repository ships both a
+#: rejecting fixture and an accepting one. A rule that has only ever run against
+#: the tree it was written for has not been shown to reject anything.
+_TICKED_TEMPLATE = "# T" + _NL + _NL + "- [x] done" + _NL
+_CLEAN_TEMPLATE = "# T" + _NL + _NL + "- [ ] done" + _NL
+_TICK_OVER_UNRUN = "# D" + _NL + _NL + "| a | not run |" + _NL + _NL + "- [x] complete" + _NL
+_TICK_OVER_DONE = "# D" + _NL + _NL + "| a | ran |" + _NL + _NL + "- [x] complete" + _NL
+_COMMENTED_TICK = "# T" + _NL + _NL + "<!-- - [x] an example in a comment -->" + _NL
+
+
+def test_the_template_rules_reject_what_they_are_named_for() -> None:
+    """Falsifiers for the four rules below, and acceptance cases beside them.
+
+    The commented-tick case is the one worth having: template instructions are
+    written in HTML comments and legitimately contain `- [x]` examples, so a
+    rule that did not strip them would fire on every well-formed template.
+    """
+    assert _TICKED.search(_without_comments(_TICKED_TEMPLATE)), "a ticked box went unseen"
+    assert not _TICKED.search(_without_comments(_CLEAN_TEMPLATE)), "an unticked box was flagged"
+    assert not _TICKED.search(_without_comments(_COMMENTED_TICK)), (
+        "a `- [x]` inside an HTML comment was read as a real tick; template "
+        "instructions are written in comments and legitimately contain examples"
+    )
+
+    assert _NOT_RUN_CELL.findall(_TICK_OVER_UNRUN), "an unrun cell went unseen"
+    assert not _NOT_RUN_CELL.findall(_TICK_OVER_DONE), "a completed cell was flagged"
+
+    assert _HEADING.findall("## 2b. Was it faster?" + _NL) == ["2b. Was it faster?"]
+    assert _BOLD_LABEL.findall("**Verdict on criterion 4:** x") == ["Verdict on criterion 4:"]
+
+
+def test_the_template_set_is_not_empty() -> None:
+    """The zero-match pin, and it is load-bearing rather than bookkeeping.
+
+    Three of the four rules below are plain loops over `_templates()`. A glob
+    that matched nothing would make them pass **silently** -- not skip, pass --
+    which is the failure mode this whole file is about. The repository already
+    ships this idiom twice, in `test_seam_is_closed.py` and
+    `test_policy_is_not_configuration.py`; it was missing here.
+    """
+    found = _templates()
+    assert found, (
+        "no `*.template.md` found under evidence/ or decisions/. Either the "
+        "templates moved, in which case update `_DOC_ROOTS`, or they were "
+        "deleted -- and the rules below are now checking nothing."
+    )
+    assert {path.name for path in found} >= {"02-bakeoff.template.md", "05-verdict.template.md"}, (
+        f"the known templates are missing from {[p.name for p in found]}"
+    )
 
 
 def test_no_template_carries_a_ticked_box() -> None:

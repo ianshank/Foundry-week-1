@@ -180,6 +180,20 @@ def test_top_level_result_summary_does_not_fabricate_a_pass(sink):
 
     The defect is greppable in history under this name again, which is the
     other half of what a regression guard is for.
+
+    **What this test actually constrains, which is not what its name suggests.**
+    Re-adding `"result"` to `_PASSED_KEYS` leaves it green -- verified by
+    mutation. `_collect_scorers` refuses at the root before `_PASSED_KEYS` is
+    ever consulted, because this fixture carries `scorers:` and not `results:`.
+    So the named regression is now defended by two *other* mechanisms: the
+    root-`results` pin (see `test_a_results_list_nested_elsewhere_is_still_refused`,
+    which does go red when tolerance is restored) and `_normalise_passed`'s
+    refusal to read the string `"pass"` as a boolean (see below).
+
+    That is worth saying rather than quietly renaming the test. The pin made
+    the original defect unreachable, which is the outcome you want -- but a
+    guard whose stated subject is defended by something else is one refactor
+    away from being the only thing left, and then it would not fire.
     """
     sink(
         "run-20",
@@ -194,7 +208,35 @@ def test_top_level_result_summary_does_not_fabricate_a_pass(sink):
     assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
     assert result["pass_rate"] is None, "the top-level summary was counted as a pass"
     assert result["scorers"] == []
-    assert "pass" not in json.dumps(result["scorers"])
+
+
+def test_a_summary_key_inside_a_scorer_record_is_not_read_as_a_verdict(sink):
+    """The `_PASSED_KEYS` half, reachable through the pinned schema.
+
+    The test above is named for the phantom-scorer defect but no longer detects
+    it, because the root-`results` pin refuses its fixture first. This one puts
+    a summary-shaped key *inside* a well-formed scorer record, which is the only
+    place `_PASSED_KEYS` is still consulted -- so it goes red if `"result"` is
+    re-added to that tuple and starts being read as a verdict.
+
+    The value has to be a **boolean**, and finding that out took a mutation.
+    With `result: "pass"` the mutation is invisible, because `_normalise_passed`
+    refuses the string regardless of which key it arrived under -- so that
+    fixture would have been a third test that does not detect the defect it
+    names. With `result: true` the mutation is observable:
+
+        baseline: BLOCKED  pass_rate=None
+        mutated : PASS     pass_rate=1.0
+
+    which is the fabricated pass, exactly as the original defect produced it.
+    """
+    sink("run-26", {"results": [{"scorer": "grounding", "result": True}]})
+    result = score_run("run-26")
+
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
+    assert result["pass_rate"] is None, "a summary key was read as a passing verdict"
+    assert result["scorers"] == []
 
 
 def test_a_summary_beside_a_valid_results_list_is_not_counted(sink):
@@ -223,7 +265,6 @@ def test_a_summary_beside_a_valid_results_list_is_not_counted(sink):
     assert [record["scorer"] for record in result["scorers"]] == ["grounding"]
     assert result["pass_rate"] == 0.0, "the summary field was counted as a passing scorer"
     assert result["counts"] == {"true": 0, "false": 1, "null": 0, "unreadable": 0}
-    assert "overall" not in json.dumps(result["scorers"])
 
 
 def test_a_results_list_nested_elsewhere_is_still_refused(sink):
