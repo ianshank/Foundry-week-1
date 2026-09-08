@@ -24,7 +24,7 @@
           "ERROR",
           "--json"
         ],
-        "duration_ms": 172,
+        "duration_ms": 187,
         "findings": {
           "blocking": 0,
           "findings": [
@@ -79,7 +79,7 @@
     },
     {
       "case": "findings",
-      "target": "E:/Coding_Projects/foundry_week1/configs/fixtures/planlint/findings",
+      "target": "configs/fixtures/planlint/findings",
       "expected_verdict": "FINDINGS",
       "actual_verdict": "FINDINGS",
       "exit_code": 1,
@@ -101,7 +101,7 @@
           "ERROR",
           "--json"
         ],
-        "duration_ms": 141,
+        "duration_ms": 155,
         "findings": {
           "blocking": 2,
           "findings": [
@@ -141,7 +141,7 @@
     },
     {
       "case": "blocked",
-      "target": "E:/Coding_Projects/foundry_week1/configs/fixtures/planlint/blocked",
+      "target": "configs/fixtures/planlint/blocked",
       "expected_verdict": "BLOCKED",
       "actual_verdict": "BLOCKED",
       "exit_code": 2,

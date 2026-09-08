@@ -27,7 +27,7 @@ Two guards, because they fail differently:
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -162,12 +162,31 @@ def test_every_in_repo_target_the_selfcheck_cites_still_exists() -> None:
         target = case.get("target")
         if not target or case.get("skipped"):
             continue
-        candidate = Path(target)
-        try:
-            inside = candidate.resolve().is_relative_to(_REPO.resolve())
-        except (OSError, ValueError):
+        # Absolute under EITHER convention is someone else's machine and is not
+        # ours to verify. Testing with `Path` alone is a trap: on Linux
+        # `Path("E:/x").is_absolute()` is False, so a Windows path reads as
+        # repo-relative and gets flagged for merely being foreign -- which is
+        # exactly how this guard failed on the ubuntu legs while passing on
+        # windows. `_portable_target` in `__main__.py` is what makes the
+        # in-repo cases relative in the first place, so this check has
+        # something portable to check.
+        if PureWindowsPath(target).is_absolute() or PurePosixPath(target).is_absolute():
+            # An absolute path is someone else's machine and is not ours to
+            # verify -- with one exception that matters. `_portable_target`
+            # rewrites every in-repo target to a relative path, so an absolute
+            # one that still names this repository's own directory cannot have
+            # come from a run: it is either older than that fix or was typed.
+            # That is precisely the shape of the hand-edit this guard exists
+            # for, `e:/Coding_Projects/foundry_week1/bad_target`, and matching
+            # on the directory name is pure string work, so it holds on every
+            # platform.
+            if f"/{_REPO.name.lower()}/" in target.replace("\\", "/").lower():
+                missing.append(
+                    f"{case['case']} -> {target} (absolute, but inside this repo: "
+                    "a real run records those relative)"
+                )
             continue
-        if inside and not candidate.exists():
+        if not (_REPO / target).exists():
             missing.append(f"{case['case']} -> {target}")
 
     assert not missing, (
