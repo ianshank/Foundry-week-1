@@ -9,6 +9,14 @@ pull request #5. The evidence behind every item is in
 > statements about coverage flags, `requirements.txt` and `scoring.py`'s import
 > fallback have been overtaken by those merges and are corrected in place. Read
 > `CHANGELOG.md` for what has landed since.
+>
+> **Amended 2026-09-08**, after an audit found two rows here asserting things
+> that had become false — `evidence/02-bakeoff.md` recorded as "still absent"
+> when it exists, and the outcome-vocabulary row recorded as "Fixed" when two
+> documents still offered two values. A stale plan is a dated record and that is
+> fine; a plan that states a *current* fact wrongly is the defect this
+> repository is about. Tracks A and C are the genuinely open work and are
+> untouched below.
 
 **Status: Tracks A, D, and E are done.** Track E (Windows platform-parity,
 branch `h`) closed 12 test failures that were Windows-local and invisible to CI.
@@ -107,7 +115,7 @@ These are recorded as fixed and are not:
 |---|---|
 | "`evidence/05-verdict.md` was empty — **fixed**" | The file exists. Its exit-1 contract row still cites a self-check whose own `all_expected` is `false`, three of four model slots still have no data, and four agent probes are still marked passed without having been run. Written is not the same as supported. |
 | "coverage enforced with `--fail-under=80`" | The floor is 90 now, measured with the SDK installed so `server.py` is actually in the denominator. Under the old arrangement that file scored 0% and the gate could not see the one thing it exists to guard. |
-| "`evidence/02-bakeoff.md`" | Still absent; only `02-bakeoff.template.md` exists, and the decision record cites the former. |
+| "`evidence/02-bakeoff.md`" | **Closed 2026-09-08.** The record exists; nine of sixteen matrix cells read `not run`, which is the honest state. The template was restored pristine and four guards in `tests/regression/test_selfcheck_evidence.py` prevent the fill-in-place recurrence. |
 
 Everything else from the earlier findings list — the escaped `RecursionError`,
 the unstable envelope, the unreachable verbs, the namespace shadowing, the
@@ -138,12 +146,24 @@ Corrections required before it lands:
   latency figure that disagrees with the committed measurement.
 - Scrub the Windows user path from `evidence/03-mcp-selfcheck.json`.
 
-**B2 — The scoring contract change (hold).** `scoring.py` now requires a root
-`results` list and blocks the entire run if any single record is malformed.
-Seven contract tests were deleted to match. The previous revision of this file
-made pinning conditional on seeing a real sink artifact, and none exists — the
-demo eval aborts before writing one, because the harness refuses to gate on a
-judge with no calibration artifact.
+**B2 — The scoring contract change. Landed, with the record it required.**
+`scoring.py` requires a root `results` list and blocks the run if any single
+record is malformed. The hold condition this section set — "land it with a
+`decisions/0002` entry recording the pinned shape" — is now satisfied:
+`decisions/0002-pinned-sink-schema.md` exists, as ACCEPTED with a stated
+reversal condition, and says in its own opening that it was written after the
+fact because the pin shipped without it.
+
+The objection is recorded rather than closed. The shape is taken from
+documented output, **not from any real artifact** — the demo eval still aborts
+before writing one, because the harness refuses to gate on a judge with no
+calibration artifact. And
+`test_top_level_result_summary_does_not_fabricate_a_pass`, whose deletion this
+section called "a bigger problem than the missing decision record", has been
+restored under its original name with the assertions it lost.
+
+What follows is the original argument, kept because the risk it names is still
+live.
 
 Pinning a guessed schema converts "we read something odd, here is what we found"
 into "refused, no data." Hold this until Track C0 produces an artifact, then
@@ -344,8 +364,8 @@ Replaces the previous table, which recorded several items as fixed that are not.
 | Scanner crashes out of tree | **Fixed.** See D3 |
 | "Policy is not configuration" untested | **Fixed.** See D5 |
 | `make validate` red after `make setup` | **Fixed.** See D6 |
-| Outcome vocabulary differs across three documents | **Fixed.** All three now say keep as sidecar / bench only / drop |
-| Criterion 4 has no field in the verdict template | **Fixed.** Section 2b asks for two timings and a named baseline |
+| Outcome vocabulary differs across documents | **Fixed for real, 2026-09-08.** This row said "Fixed" while `RUNBOOK.md:7` and `decisions/0001`'s own title still offered two values. Both now say keep as sidecar / bench only / drop. |
+| Criterion 4 has no field in the verdict template | **Fixed in the template, and now in the record.** Section 2b asks for two timings and a named baseline; the *filled* verdict did not carry it until 2026-09-08, so the question went unanswered while the form asking it sat beside the file. Answered `not measured`. |
 | Actions on mutable tags | **Narrowed.** Patch-pinned since; SHA-pinning still open, accepted |
 | No dependency lockfile | **Open, accepted** |
 | TOCTOU between check and subprocess | **Open, accepted** |

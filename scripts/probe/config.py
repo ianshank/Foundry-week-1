@@ -15,6 +15,20 @@ DEFAULT_TOP_P = 1.0
 DEFAULT_MAX_TOKENS = 800
 DEFAULT_TIMEOUT = 180
 
+#: How much of an HTTP error body is carried into a row's `detail`.
+#:
+#: Named rather than left as a bare slice, following the precedent set three
+#: times already -- `config.CONFIG_ERROR_DETAIL_LIMIT`,
+#: `scan_evidence.PATTERN_PREVIEW_CHARS`, `promote_trace.MAX_REPORTED_FINDINGS`
+#: -- each of which says the same thing: deliberately NOT a `PROBE_*` setting.
+#:
+#: It is a truncation on a diagnostic that gets written into a tracked
+#: transcript, and a vendor's error body can echo the request that produced it,
+#: `Authorization` header included. Making the width configurable would make
+#: "how much of a possibly-credential-bearing body do we keep" an environment
+#: variable. The full body is not kept anywhere; this is the only record.
+HTTP_ERROR_DETAIL_CHARS = 600
+
 # Named constants for the same reason `foundry_spike_mcp.config` uses them: a
 # typo in an inline literal is a silently-ignored setting. These were read as
 # bare strings in `cli.py`, which also kept them invisible to the suite's
