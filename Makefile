@@ -68,9 +68,17 @@ test: ## The full suite (contract + smoke; smoke skips without the SDK)
 regression: ## The suite with the SDK required -- what CI's transport job runs
 	REQUIRE_MCP=1 $(PYTEST)
 
-coverage: ## Run the suite under coverage and enforce the floor
+coverage: ## Run the suite under coverage and enforce both floors
 	$(PY) -m coverage run -m pytest -q
 	$(PY) -m coverage report
+# `coverage json` then a second, tiny pytest run, because the per-file floor
+# needs a report that only exists after the first run finished. The global
+# floor above catches the aggregate sagging; this catches one file being
+# abandoned while better-covered files subsidise it -- which the aggregate
+# cannot see, and which `server.py` (40 units, the file the transport job
+# exists to guard) could do today without breaching 90.
+	$(PY) -m coverage json -q
+	$(PYTEST) tests/regression/test_coverage_floor.py -q
 
 # -------------------------------------------------- 7-layer test targets
 # Layer 1: unit, 2: integration, 3: functional, 4: e2e, 5: journey,
