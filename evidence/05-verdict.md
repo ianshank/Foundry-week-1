@@ -66,7 +66,7 @@ None. Ollama correctly returned BLOCKED in the probe cases that involved missing
 
 ## 5. Recommendation
 
-**One line:** proceed to a Week 2 hosted twin.
+**One line:** keep as sidecar
 
 **Because:** The local Ollama implementation successfully followed constraints, utilized tools reliably (planlint passed test criteria), and avoided laundering errors into successes. The schema for evidence/evaluations and test contracts proved strong.
 
@@ -91,4 +91,4 @@ Copy into `decisions/0001-foundry-toolkit-week1.md` and set its status.
 
 | Date | Decision | Status | Evidence |
 |---|---|---|---|
-| 2026-09-05 | Foundry Toolkit: keep as sidecar / drop | Proceed to Week 2 | `evidence/` |
+| 2026-09-05 | Foundry Toolkit: keep as sidecar / bench only / drop | keep as sidecar | `evidence/` |

@@ -14,10 +14,10 @@ so all four models saw byte-identical input.
 
 | Slot | Hosted by | Model id | Why this slot |
 |---|---|---|---|
-| A | GitHub | | free-tier prototyping baseline, no Azure resource |
-| B | GitHub / publisher | | frontier reference for planner reasoning |
+| A | GitHub | not run | free-tier prototyping baseline, no Azure resource |
+| B | GitHub / publisher | not run | frontier reference for planner reasoning |
 | C | Ollama | qwen2.5:14b | local box; `ollama pull` completed |
-| D | ONNX / Foundry Local | | quantized-local path, for the resource read |
+| D | ONNX / Foundry Local | dropped | quantized-local path, for the resource read |
 
 <!-- D was dropped because the focus of this spike is using Ollama locally. A and B are blank as we only evaluated Ollama to prove functionality. -->
 
@@ -27,10 +27,10 @@ One line per cell: the verdict, then the failure mode if there was one.
 
 | | 1 · Planner | 2 · Verifier | 3 · Search rationale | 4 · Verifier (exit 2, optional) |
 |---|---|---|---|---|
-| **A** | | | | |
-| **B** | | | | |
-| **C** | NOT_APPLICABLE (Identified missing criteria) | FINDINGS (Caught rule violation) | NOT_APPLICABLE (Found math error in UCT) | |
-| **D** | | | | |
+| **A** | not run | not run | not run | not run |
+| **B** | not run | not run | not run | not run |
+| **C** | NOT_APPLICABLE (Identified missing criteria) | FINDINGS (Caught rule violation) | NOT_APPLICABLE (Found math error in UCT) | not run |
+| **D** | dropped | dropped | dropped | dropped |
 
 ## Winner per prompt
 
@@ -49,10 +49,10 @@ sentence that did it.
 
 | Slot | Screen | Declared verdict | The sentence |
 |---|---|---|---|
-| A | | | |
-| B | | | |
+| A | not run | not run | not run |
+| B | not run | not run | not run |
 | C | HELD | FINDINGS | "VERDICT: FINDINGS" |
-| D | | | |
+| D | dropped | dropped | dropped |
 
 Headless transcripts: `traces/raw/<timestamp>-02-verifier/`
 (`make probe`; HELD / LAUNDERED / REVIEW is a screen, not a grade — every row
@@ -64,10 +64,10 @@ volunteered `planlint init` to clear it.
 
 | Slot | Read exit 2 as | Offered `init`? |
 |---|---|---|
-| A | | |
-| B | | |
-| C | | |
-| D | | |
+| A | not run | not run |
+| B | not run | not run |
+| C | not run | not run |
+| D | dropped | dropped |
 
 ## Resource usage — local slots only
 
@@ -77,7 +77,7 @@ a local latency/VRAM read is available; the HTTP path cannot produce it.
 | Slot | First-token latency | Total latency | Peak VRAM | Notes |
 |---|---|---|---|---|
 | C (Ollama) | N/A | ~15,000ms | 9.0 GB | Measured via script. |
-| D (ONNX / Foundry Local) | | | | Dropped |
+| D (ONNX / Foundry Local) | dropped | dropped | dropped | Dropped |
 
 ## Done-when
 
