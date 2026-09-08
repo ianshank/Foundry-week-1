@@ -159,7 +159,7 @@ jobs:
         # Measured here rather than in `contract`, whose whole value is running
         # with nothing installed.
         #
-        # The floor is 90 against a real 95. Deliberately not 95: a floor set
+        # The floor is 90 against a real 93.65. Deliberately not 93: a floor set
         # to the current number is a target, and the way people hit a target is
         # by writing tests shaped like coverage rather than tests shaped like
         # the contract. Five points is room to refactor without room to delete
@@ -174,7 +174,7 @@ jobs:
 
       - name: Per-file coverage floor
         # The floor above is measured against the TOTAL, and on this tree that
-        # leaves ~48 uncovered units of headroom -- enough for server.py (40
+        # leaves ~55 uncovered units of headroom -- enough for server.py (40
         # units) to drop to zero coverage with the aggregate still above 90.
         # server.py is the file the transport job's own comment says exists to
         # stop "a server that could not import, under a green tick". A

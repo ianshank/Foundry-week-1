@@ -17,6 +17,7 @@ and represent the canonical cross-platform executable factory for this repo.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -186,50 +187,97 @@ def test_all_allowed_verbs_reach_subprocess(make_stub, spec_repo: Path, verb: st
 # Finding F14 - Coverage gate configured
 # ---------------------------------------------------------------------------
 
-def test_coverage_gate_is_configured_in_pyproject() -> None:
-    """pyproject.toml must declare a fail_under floor for coverage.
+_DECLARED_FLOOR = re.compile(r"(?m)^fail_under\s*=\s*(\d+)\s*$")
+_CI_FLOOR_OVERRIDE = re.compile(r"--fail-under[= ](\d+)")
 
-    Without this, deleting a test file can go unnoticed: the next CI run
-    measures lower coverage but reports success if no floor is set.
+
+def _declared_floor(repo_root: Path) -> int:
+    """Read the floor's *value* out of pyproject.toml, with the stdlib only.
+
+    Two predecessors are folded into this one function.
+
+    `test_coverage_gate_is_configured_in_pyproject` asserted `"fail_under" in
+    content`, which `fail_under = 0` satisfies -- a substring check stops
+    exactly one spelling of nothing.
+
+    `test_the_declared_coverage_floor_is_at_least_ninety` read the value
+    correctly but opened with `pytest.importorskip("tomli")` on 3.10, which
+    makes a guard on the coverage floor depend on a *transitive* dependency of
+    pytest. It happens to be present today (pytest requires `tomli>=1` below
+    3.11), so it does not skip -- but a guard that would silently become a skip
+    if pytest dropped that pin is not the shape you want on the floor that
+    guards every other number in this repository. An anchored regex reads the
+    same value, needs no parser, and cannot skip anywhere.
     """
-    repo_root = Path(__file__).resolve().parents[2]
-    content = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
-    assert "fail_under" in content, (
-        "No fail_under configured in pyproject.toml [tool.coverage.report]. "
-        "Coverage is measured but not gated -- deleting tests passes CI."
+    matches = _DECLARED_FLOOR.findall((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert len(matches) == 1, (
+        f"expected exactly one `fail_under` declaration in pyproject.toml, found {matches}"
+    )
+    return int(matches[0])
+
+
+def _ci_floor_overrides(ci_text: str, declared: int) -> list[int]:
+    """Every `--fail-under` in the workflow that would undercut the declared floor.
+
+    Pure over text, not over a path, so the mutants in
+    `test_the_floor_check_rejects_every_spelling_the_substring_check_allowed`
+    can prove this function rejects something. The version it replaces asserted
+    `"--fail-under=80" not in ci_content`: one spelling, of one number, guarding
+    the floor that guards everything else. `--fail-under=85`, `--fail-under 80`
+    and `--fail-under=0` all passed it.
+    """
+    return [int(value) for value in _CI_FLOOR_OVERRIDE.findall(ci_text) if int(value) < declared]
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    ["--fail-under=80", "--fail-under=85", "--fail-under 80", "--fail-under=0"],
+)
+def test_the_floor_check_rejects_every_spelling_the_substring_check_allowed(spelling: str) -> None:
+    """Four spellings; the old substring assertion caught one.
+
+    Shipped permanently rather than run once, because a static guard that has
+    only ever been run against conforming text has never been shown to reject
+    anything. That was the state of the substring check this replaces: it had
+    never been run against a workflow that *did* undercut the floor, so nobody
+    noticed it recognised one spelling out of four.
+    """
+    assert _ci_floor_overrides(f"        run: coverage report {spelling}\n", 90), (
+        f"{spelling!r} would undercut a floor of 90 and this check let it through"
     )
 
 
-def test_ci_coverage_floor_matches_pyproject() -> None:
-    """ci.yml must not override pyproject.toml's coverage floor with a lower value.
+def test_the_floor_check_accepts_a_workflow_that_does_not_override() -> None:
+    """The other half: it must be able to return empty, or it is not a check.
 
-    The CI quality job runs `coverage report` without `--fail-under`;
-    pyproject.toml's `fail_under` applies. A hard-coded `--fail-under=80`
-    in ci.yml would silently replace the 90% gate with an 80% gate.
+    `--fail-under=95` is *above* the floor and must not be reported -- a guard
+    that flags every occurrence of the flag would be an accurate string matcher
+    and a useless floor guard.
     """
-    repo_root = Path(__file__).resolve().parents[2]
-    ci_content = (repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "--fail-under=80" not in ci_content, (
-        "ci.yml hard-codes --fail-under=80, overriding pyproject.toml's fail_under=90. "
-        "Remove the --fail-under flag from ci.yml and let pyproject.toml govern."
-    )
+    assert not _ci_floor_overrides("run: coverage report\n", 90)
+    assert not _ci_floor_overrides("run: coverage report --fail-under=95\n", 90)
 
 
 def test_the_declared_coverage_floor_is_at_least_ninety() -> None:
-    """Parse the floor, do not grep for the word.
+    """Parse the floor, do not grep for the word."""
+    assert _declared_floor(Path(__file__).resolve().parents[2]) >= 90, (
+        "the coverage floor was lowered"
+    )
 
-    `test_coverage_gate_is_configured_in_pyproject` asserts `"fail_under" in
-    content`, which is satisfied by `fail_under = 0`. Its docstring claims it
-    stops "deleting tests passes CI"; a substring check stops exactly one
-    spelling of nothing. The value is the whole point, so read the value.
+
+def test_ci_does_not_undercut_the_declared_coverage_floor() -> None:
+    """ci.yml must not replace pyproject.toml's floor with a lower one.
+
+    The quality job runs `coverage report` with no `--fail-under`, so
+    pyproject.toml governs. A hard-coded CLI floor would silently replace it,
+    and the two floors would diverge with both looking configured.
     """
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # Python 3.10
-        tomllib = pytest.importorskip("tomli", reason="no TOML parser on this interpreter")
-
     repo_root = Path(__file__).resolve().parents[2]
-    parsed = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
-    floor = parsed["tool"]["coverage"]["report"]["fail_under"]
+    declared = _declared_floor(repo_root)
+    ci_text = (repo_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert floor >= 90, f"the coverage floor was lowered to {floor}"
+    undercuts = _ci_floor_overrides(ci_text, declared)
+    assert not undercuts, (
+        f"ci.yml passes --fail-under={undercuts}, undercutting pyproject.toml's "
+        f"fail_under={declared}. Remove the flag and let pyproject.toml govern."
+    )
