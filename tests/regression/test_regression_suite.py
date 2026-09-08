@@ -192,7 +192,7 @@ def _bat_valued_names(function: ast.AST) -> set[str]:
             targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
             value = node.value
         elif (
-            isinstance(node, ast.AnnAssign | ast.NamedExpr)
+            isinstance(node, (ast.AnnAssign, ast.NamedExpr))
             and isinstance(node.target, ast.Name)
             and node.value
         ):

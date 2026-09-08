@@ -343,7 +343,7 @@ def _policy_violations(source: str) -> list[str]:
                 violations.append(name + " is not a single frozenset(...) call")
                 continue
             container = value.args[0]
-            if not isinstance(container, ast.Set | ast.List | ast.Tuple):
+            if not isinstance(container, (ast.Set, ast.List, ast.Tuple)):
                 violations.append(
                     name + " is built from " + ast.dump(container)[:60] + ", not a literal"
                 )
