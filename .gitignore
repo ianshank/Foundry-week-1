@@ -17,6 +17,13 @@ mcp.json
 traces/raw/
 evidence/raw/
 
+# Agent worktrees. A subagent isolation worktree lands here holding a full
+# shadow copy of the tree -- its own settings.json, its own skills, its own
+# stale pyproject.toml with a different coverage floor. Untracked is not
+# enough: `git add -A` would commit ~90 files that look authoritative and are
+# not, and the secret scan would then be walking two copies of the repo.
+.claude/worktrees/
+
 __pycache__/
 *.py[cod]
 .pytest_cache/
