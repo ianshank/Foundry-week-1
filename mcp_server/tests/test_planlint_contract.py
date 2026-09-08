@@ -688,7 +688,16 @@ def test_undecodable_bytes_on_stdout_are_a_verdict_not_an_exception(tmp_path, co
     )
     if sys.platform == "win32":
         bat = script_dir / "planlint-raw-bytes.bat"
-        bat.write_text(f'@"{sys.executable}" "{py_script}" %*')
+        # `PYTHONUTF8=1` even though this body writes only through
+        # `sys.stdout.buffer`. The rule the guard in
+        # `tests/regression/test_regression_suite.py` enforces is
+        # unconditional on purpose: 'every .bat sets it' needs no reasoning
+        # about whether a given payload happens to be safe, and it was the
+        # per-site reasoning that let D-02 survive in four places.
+        bat.write_text(
+            '@set PYTHONUTF8=1' + chr(13) + chr(10)
+            + f'@"{sys.executable}" "{py_script}" %*'
+        )
         binary = str(bat)
     else:
         sh = script_dir / "planlint-raw-bytes"
