@@ -73,6 +73,59 @@ def _selfcheck_env(monkeypatch, tmp_path: Path, binary: Path) -> None:
     monkeypatch.delenv("SELFCHECK_BLOCKED_TARGET", raising=False)
 
 
+@pytest.mark.regression
+def test_a_blocked_target_that_resolves_differently_still_reaches_planlint(
+    monkeypatch, tmp_path, fake_planlint, capsys
+):
+    """The blocked case must be blocked by planlint, not by the allow list.
+
+    CI's `contract (windows-latest)` leg failed on main and on this branch with
+    `('BLOCKED', None)` where `('BLOCKED', 2)` was expected. The verdict was
+    right and the reason was wrong, which is the harder kind of wrong: exit
+    code `None` means nothing ever ran, so the case reported BLOCKED because
+    the allow list refused it rather than because planlint hit a precondition
+    error and exited 2. The self-check exists to prove exit 2 survives the
+    wrapper; it was proving that a guard works instead.
+
+    Cause: `check_target` resolves the target and then tests containment
+    against the roots exactly as supplied, and `_selfcheck` added its scratch
+    directory to those roots unresolved. A GitHub Windows runner's TEMP is an
+    8.3 short path that `resolve()` expands, so the root never contained its
+    own target. It passed on every machine whose temp path has no short-name
+    form, which is how it reached main.
+
+    Reproduced without needing an 8.3 path: any spelling whose resolved form
+    differs from its literal one -- `scratch/../scratch` -- does it on every
+    platform, which is what makes this a guard rather than a Windows-only note.
+    """
+    # The scratch directory must sit OUTSIDE the configured allow list, the way
+    # a real temp dir does. If it sits inside, the configured root already
+    # covers it and the appended one is never load-bearing -- which is how an
+    # earlier version of this test passed with the defect still present.
+    allowed = tmp_path / "allowed"
+    for name in ("pass", "find"):
+        (allowed / name / "openspec").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    monkeypatch.setenv("PLANLINT_BIN", str(fake_planlint))
+    monkeypatch.setenv("PLANLINT_ALLOWED_ROOTS", str(allowed))
+    monkeypatch.setenv("SELFCHECK_PASS_TARGET", str(allowed / "pass"))
+    monkeypatch.setenv("SELFCHECK_FINDINGS_TARGET", str(allowed / "find"))
+    monkeypatch.setenv("SELFCHECK_BLOCKED_TARGET", str(scratch / ".." / "scratch"))
+
+    spike_main.main(["selfcheck"])
+
+    report = json.loads(capsys.readouterr().out)
+    blocked = next(case for case in report["cases"] if case["case"] == "blocked")
+
+    assert blocked["exit_code"] == 2, (
+        "the blocked case was refused by the allow list rather than by planlint; "
+        f"exit_code={blocked['exit_code']!r} means the binary never ran"
+    )
+    assert blocked["actual_verdict"] == "BLOCKED"
+
+
 def test_selfcheck_exercises_all_three_verdicts_and_exits_zero(
     monkeypatch, tmp_path, fake_planlint, capsys
 ):

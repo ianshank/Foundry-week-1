@@ -50,7 +50,16 @@ def _selfcheck(output: Path | None) -> int:
         # the guard works but not that exit 2 survives.
         config = dataclasses.replace(
             config,
-            allowed_roots=config.allowed_roots + (Path(blocked_target),)
+            # Resolved before it joins the allow list, because `check_target`
+            # resolves the *target* and then tests containment against these
+            # roots as supplied. On a Windows CI runner `TEMP` is an 8.3 short
+            # path (`C:\Users\RUNNER~1\...`) which `resolve()` expands to
+            # `C:\Users\runneradmin\...`, so an unresolved root never contains
+            # its own resolved target: the guard refused the scratch directory
+            # and the blocked case reported BLOCKED with `exit_code: None` --
+            # blocked by the allow list rather than by planlint's exit 2, which
+            # is a different fact wearing the same verdict.
+            allowed_roots=config.allowed_roots + (Path(blocked_target).resolve(),)
         )
     except ConfigError as error:
         # `ConfigError`, not `ValueError`. The wider catch was one refactor

@@ -105,7 +105,15 @@ def _end_process_tree(process: subprocess.Popen[str]) -> None:
     """
     try:
         if _CAN_KILL_GROUPS:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)  # type: ignore[attr-defined]  # POSIX-only; guarded by _CAN_KILL_GROUPS
+            # `unused-ignore` is listed deliberately alongside `attr-defined`.
+            # `os.killpg` does not exist on Windows, so the ignore is required
+            # when mypy runs there -- and it is *unused* when mypy runs on
+            # Linux, where `warn_unused_ignores = true` then reports it as an
+            # error. CI type-checks on ubuntu and developers here type-check on
+            # Windows, so a single-code ignore is red on exactly one of them
+            # whichever code is chosen. Listing both makes the suppression
+            # self-cancelling on the platform that does not need it.
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)  # type: ignore[attr-defined,unused-ignore]
         else:  # pragma: no cover - Windows
             process.kill()
     except (ProcessLookupError, PermissionError, OSError):

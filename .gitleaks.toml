@@ -56,6 +56,14 @@ paths = [
   # `test_every_allowlisted_path_still_exists` stays a real check instead of
   # being weakened to accommodate a tombstone.
   '''(^|/)tests/(security/test_security_gates|test_evidence_hygiene|test_cli_entrypoints|test_verifier_screen)\.py$''',
+  # The guard for the scanner's own multi-line rules. It has to contain a real
+  # `-----BEGIN RSA PRIVATE KEY-----` block, because the defect it pins was
+  # that `scan_file` matched line by line and therefore could never fire on a
+  # rule that spans newlines -- a PEM key scanned clean and `promote_trace`
+  # copied it into tracked `traces/`. A test for that cannot be written
+  # without the shape it tests for. The body is `MIIEabcdef0123456789ABCDEF`,
+  # which is not a key.
+  '''(^|/)tests/regression/test_secret_gate_integrity\.py$''',
   # mcp.json.example carries ALLCAPS placeholders, not values.
   '''(^|/)mcp(_server)?/mcp\.json\.example$''',
   # This file: the rules and the allowlist quote the shapes they match on.
