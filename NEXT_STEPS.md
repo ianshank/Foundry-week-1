@@ -346,7 +346,7 @@ Replaces the previous table, which recorded several items as fixed that are not.
 | `make validate` red after `make setup` | **Fixed.** See D6 |
 | Outcome vocabulary differs across three documents | **Fixed.** All three now say keep as sidecar / bench only / drop |
 | Criterion 4 has no field in the verdict template | **Fixed.** Section 2b asks for two timings and a named baseline |
-| Actions on floating major tags | **Open, accepted** |
+| Actions on mutable tags | **Narrowed.** Patch-pinned since; SHA-pinning still open, accepted |
 | No dependency lockfile | **Open, accepted** |
 | TOCTOU between check and subprocess | **Open, accepted** |
 | A sink artifact that is not valid UTF-8 raised out of `score_run` | **Fixed.** Found while testing D1; `UnicodeDecodeError` is a sibling of `JSONDecodeError`, not a parent |

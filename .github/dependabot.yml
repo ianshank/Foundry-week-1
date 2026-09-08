@@ -2,11 +2,17 @@ version: 2
 
 # Two ecosystems, for different reasons.
 #
-# `github-actions` is the one that matters. The workflow uses floating major
-# tags (`@v4`, `@v5`, `@v2`), so a compromised tag would run in CI with the
-# default token and no diff to review. Dependabot converts that silent risk
-# into a reviewable pull request. SHA-pinning would be stronger; this is the
-# proportionate control for a spike with `contents: read` and no secrets.
+# `github-actions` is the one that matters. The workflow pins **patch** tags --
+# `checkout@v4.1.7`, `setup-python@v5.1.1`, `gitleaks-action@v2.3.6` -- which is
+# narrower than a floating major and still a mutable ref: the tag can be moved
+# by whoever owns the repository. Dependabot is what keeps a pinned tag from
+# silently rotting, and turns each bump into a reviewable diff. SHA-pinning
+# would be stronger and is deferred; this is the proportionate control for a
+# spike with `contents: read` and no secrets.
+#
+# This comment described the workflow as using floating majors long after it
+# stopped doing so, and `SECURITY.md` and `NEXT_STEPS.md` repeated it. The
+# rationale below still holds -- it just rests on a narrower starting point.
 #
 # `pip` has exactly one direct dependency (`mcp`, bounded >=1.2,<3). Monthly,
 # because a weekly PR for a single bounded dependency is noise, and because the
@@ -38,8 +44,9 @@ updates:
     labels:
       - dependencies
       - github-actions
-    # One PR for the workflow's actions rather than one per action. The four
-    # floating tags (`checkout@v4`, `setup-python@v5`, `gitleaks-action@v2`)
+    # One PR for the workflow's actions rather than one per action. The three
+    # pinned tags (`checkout@v4.1.7`, `setup-python@v5.1.1`,
+    # `gitleaks-action@v2.3.6`)
     # are reviewed the same way and pass or fail on the same CI run, so three
     # separate PRs is three times the review for one decision. Grouped majors
     # included on purpose: a major action bump is exactly what this entry

@@ -15,12 +15,13 @@ rounded up.
       runbook permits; slots A and B never attempted, which it does not.
       `evidence/02-bakeoff.md`.
 - [x] **Session 3: MCP Schema Extraction** — the CLI half is done and real.
-      `make selfcheck` runs the real `planlint 0.2.0` against tracked fixtures
+      `make selfcheck` runs the real `planlint 0.2.0` (FINDINGS and BLOCKED
+      against tracked fixtures, PASS against an out-of-tree repo)
       and `evidence/03-mcp-selfcheck.json` reads `all_expected: true`, so exit
       0, 1 and 2 all land. Two things it does *not* cover, both stated in the
       verdict: the tools were never listed in Agent Builder, and `score_run`
       has never read a real sink artifact.
-- [ ] **Session 4: Bake-off Matrix Execution (Probe)** — one cell of twelve has
+- [ ] **Session 4: Bake-off Matrix Execution (Probe)** — one cell of the sixteen-cell matrix has
       evidence behind it. No agent was built, so the four agent probes were not
       run and `snippets/` holds only its README.
 - [ ] **Session 5: Verdict Extraction & Review** — `evidence/05-verdict.md` is

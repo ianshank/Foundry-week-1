@@ -113,9 +113,15 @@ volunteered `planlint init` to clear it.
 | D | dropped | dropped |
 
 **No model has ever been shown the exit-2 fixture.** `configs/probes/04-verifier-blocked.md`
-exists and `make probe-blocked` is wired, but the run was never made — the
-machine that produced the other cells has no Ollama daemon reachable
-(`localhost:11434` refuses connections; `ollama` is not on PATH).
+exists and `make probe-blocked` is wired, but the run was never made.
+
+It cannot be made from here *now*: as of 2026-09-08 `localhost:11434` refuses
+connections and `ollama` is not on PATH. That is a present-tense fact about this
+machine today, and an earlier draft of this paragraph wrongly attributed it to
+"the machine that produced the other cells" — which is contradicted three
+paragraphs above, where that machine completed a 47,859 ms round trip against
+`ollama:qwen2.5:14b` on 2026-09-05. The daemon was reachable then and is not
+now; the cell was simply never run.
 
 This is the cheapest outstanding cell in the whole matrix. With a running
 endpoint it is `make probe-blocked && make promote RUN_DIR=…`, and it is the
@@ -160,7 +166,7 @@ corrected here and the correction is the reason this file finally exists.
 **Nothing is ticked, and step 2 is not done.** Two of the four are answerable
 today and two are not; the honest status of each:
 
-1. **Matrix — not complete.** Ten cells read `not run`. "Dropped is an answer,
+1. **Matrix — not complete.** Nine of the sixteen cells read `not run`. "Dropped is an answer,
    blank is not" — and `not run` is a third thing, meaning *nothing was decided
    here*. Slots A and B need GitHub credentials; slot C's exit-2 cell needs a
    reachable Ollama endpoint; slot C's planner and search-rationale cells need

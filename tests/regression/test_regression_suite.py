@@ -654,3 +654,76 @@ def test_ci_does_not_undercut_the_declared_coverage_floor() -> None:
         f"ci.yml passes --fail-under={undercuts}, undercutting pyproject.toml's "
         f"fail_under={declared}. Remove the flag and let pyproject.toml govern."
     )
+
+
+# ---------------------------------------------------------------------------
+# Layer targets must run the layer they name.
+# ---------------------------------------------------------------------------
+
+_MAKEFILE = Path(__file__).resolve().parents[2] / "Makefile"
+
+#: The layer target that silently ran the wrong thing, and what it must reach.
+#:
+#: `make test-e2e` ran `tests/e2e/` only -- four tests, two of them `--help`
+#: invocations -- while `mcp_server/tests/test_server_e2e_stdio.py`, which
+#: spawns the server and drives a real JSON-RPC handshake over stdio, did not
+#: count as an end-to-end test. That file cannot move: the contract suite must
+#: also run standalone under `cd mcp_server && pytest`. So the target has to
+#: name it, and nothing checked that it still does.
+_TARGET_MUST_REACH = {
+    "test-e2e": ("tests/e2e/", "mcp_server/tests/test_server_e2e_stdio.py"),
+}
+
+
+def _makefile_recipe(target: str) -> str:
+    """The *commands* for one target, with comment lines stripped.
+
+    Stripping comments is load-bearing, and it took reverting the recipe to its
+    pre-fix form and watching this guard stay green to notice. The comment block
+    above the command explains *why* the target names that file, so it mentions
+    the path too -- and a check that reads the whole body is then satisfied by
+    the explanation of the thing rather than by the thing.
+    """
+    lines = _MAKEFILE.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith(f"{target}:"):
+            continue
+        body: list[str] = []
+        for following in lines[index + 1 :]:
+            if following and not following.startswith(("\t", " ", "#")):
+                break
+            if following.strip().startswith("#"):
+                continue
+            body.append(following)
+        return chr(10).join(body)
+    raise AssertionError(f"no `{target}` target found in the Makefile")
+
+
+@pytest.mark.parametrize("target", sorted(_TARGET_MUST_REACH))
+def test_a_layer_target_still_runs_the_layer_it_names(target: str) -> None:
+    """A target whose name promises more than its recipe delivers.
+
+    This is a source-reading guard for the same reason `_launcher_violations`
+    is: there is no runtime seam. `make` is not installed on every machine that
+    edits this repository, and a target that quietly stops running a file
+    produces a *green* suite with less in it -- which is how the layer named
+    "e2e" came to be the weakest layer while the strongest end-to-end test in
+    the repository sat outside it.
+    """
+    recipe = _makefile_recipe(target)
+    missing = [needed for needed in _TARGET_MUST_REACH[target] if needed not in recipe]
+
+    assert not missing, (
+        f"`make {target}` no longer names {missing}. The target's name promises "
+        "a layer its recipe does not run, and a suite that silently shrinks "
+        f"still goes green.{chr(10)}recipe:{chr(10)}{recipe}"
+    )
+
+
+def test_the_recipe_reader_can_tell_targets_apart() -> None:
+    """The falsifier: a reader that returned the whole Makefile would pass above."""
+    assert "tests/e2e/" in _makefile_recipe("test-e2e")
+    assert "tests/e2e/" not in _makefile_recipe("test-unit"), (
+        "the recipe reader is returning more than one target's body, so the "
+        "check above would pass for any target that exists"
+    )

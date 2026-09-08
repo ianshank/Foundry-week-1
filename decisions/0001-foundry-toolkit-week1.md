@@ -1,4 +1,4 @@
-# 0001 — Foundry Toolkit: keep as sidecar, or drop
+# 0001 — Foundry Toolkit: keep as sidecar, bench only, or drop
 
 **Status:** OPEN — closed by `evidence/05-verdict.md` at the end of session 5
 **Opened:** 2026-09-05

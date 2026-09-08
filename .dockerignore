@@ -38,6 +38,12 @@ __pycache__/
 .coverage
 .coverage.*
 coverage.xml
+# `coverage.json` too, and it is not cosmetic. `tests/regression/
+# test_coverage_floor.py` reads exactly this file and *skips* when it is
+# absent -- so a host-generated report copied into the build context would be
+# graded inside the container as though it described the container's run. The
+# gate cannot tell a stale report from a fresh one.
+coverage.json
 htmlcov/
 *.egg-info/
 dist/

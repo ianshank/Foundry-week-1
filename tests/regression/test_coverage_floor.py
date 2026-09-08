@@ -1,14 +1,18 @@
 """Regression guard: a global coverage floor lets any one file rot to zero.
 
 `pyproject.toml` declares `fail_under = 90` and coverage enforces it against
-the TOTAL only. Measured on this tree: 92.90% combined, which leaves 48
-uncovered units of headroom -- enough that several whole files could drop to
-**zero** coverage with the gate still green. Computed, not guessed:
+the TOTAL only, which leaves enough slack that several whole files could drop
+to **zero** coverage with the gate still green.
 
-    mcp_server/src/foundry_spike_mcp/server.py   40 units
-    scripts/probe/config.py                      37 units
-    scripts/verifier_probe.py                    36 units
-    mcp_server/src/foundry_spike_mcp/verdicts.py 29 units
+No percentage is quoted here, and that is deliberate. Three files in this
+repository each stated a different figure for the same measurement -- 92.90%
+here, 93.65% in `ci.yml`, and 96.02% actually measured -- because a snapshot in
+prose goes stale the moment anyone adds a test, and nothing checks it. The
+argument does not need the number: whatever the total is, a global-only floor
+cannot see any individual file, and a well-covered module silently subsidises
+an abandoned one. `test_the_global_floor_leaves_room_for_a_whole_file_to_rot`
+below computes the slack against the tree it is run on and fails if the premise
+ever stops holding.
 
 `server.py` is the file whose "a server that could not import, under a green
 tick" failure `ci.yml` explicitly says the transport job exists to catch. The
@@ -53,6 +57,58 @@ def _combined(summary: dict[str, int]) -> tuple[int, int]:
     covered = summary["covered_lines"] + summary.get("covered_branches", 0)
     total = summary["num_statements"] + summary.get("num_branches", 0)
     return covered, total
+
+
+def test_the_global_floor_leaves_room_for_a_whole_file_to_rot() -> None:
+    """The premise of this file, computed against the tree rather than quoted.
+
+    A per-file floor is only worth having if the global one is loose enough to
+    hide an abandoned module. That was argued in prose with a percentage that
+    went stale in three separate files at once. Here it is measured: take the
+    slack the global floor allows, and check it is at least as large as the
+    largest single file. If it ever is not, the global gate alone would catch a
+    file dropping to zero and this whole file becomes redundant -- which would
+    be good news, and should be found by a failing test rather than by nobody.
+    """
+    if not _COVERAGE_JSON.is_file():
+        pytest.skip("coverage.json not present; run `python -m coverage run -m pytest`")
+
+    report = json.loads(_COVERAGE_JSON.read_text(encoding="utf-8"))
+    _, total_units = _combined(report["totals"])
+    covered_units, _ = _combined(report["totals"])
+
+    global_floor = _declared_global_floor()
+    allowed_uncovered = total_units - int(total_units * global_floor / 100)
+    currently_uncovered = total_units - covered_units
+    slack = allowed_uncovered - currently_uncovered
+
+    # Not the *largest* file -- that was the first version of this assertion and
+    # it was inverted. The premise is that **some** whole file fits inside the
+    # slack, because that is the one the global gate would not notice being
+    # abandoned. If none does, the global gate alone is sufficient.
+    would_go_unnoticed = sorted(
+        (name, _combined(data["summary"])[1])
+        for name, data in report["files"].items()
+        if _combined(data["summary"])[1] <= slack
+    )
+
+    assert would_go_unnoticed, (
+        f"the global floor of {global_floor}% now leaves {slack} units of slack, "
+        "and no single file is small enough to fit inside it. The global gate "
+        "alone would catch any file being abandoned, so the premise this file "
+        "argues from no longer holds -- check whether the per-file floor is "
+        "still earning its place."
+    )
+
+
+def _declared_global_floor() -> float:
+    """Read the global floor from `pyproject.toml` rather than restating it."""
+    import re
+
+    text = (_REPO / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r"(?m)^fail_under\s*=\s*(\d+(?:\.\d+)?)\s*$", text)
+    assert match, "no `fail_under` declaration found in pyproject.toml"
+    return float(match.group(1))
 
 
 def test_no_measured_file_falls_below_the_per_file_floor() -> None:

@@ -41,6 +41,16 @@ SKILLS = sorted(
 AGENTS = sorted((CLAUDE / "agents").glob("*.md"))
 SETTINGS = CLAUDE / "settings.json"
 
+#: Architecture prose is shared and diagram-heavy, which is exactly where a
+#: machine-specific path hides in plain sight.
+#:
+#: `docs/roadmap/` is deliberately out of scope. Those are dated records that
+#: quote transcript output verbatim, including error messages containing paths;
+#: editing one to satisfy a lint would be falsifying an archive to make a check
+#: pass, which is the trade this repository exists to refuse. The rule applies
+#: to documents that describe the system as it is now.
+ARCHITECTURE_DOCS = sorted((REPO / "docs" / "architecture").rglob("*.md"))
+
 #: Anthropic's guidance caps skill descriptions; a description longer than this
 #: is a sign the skill is doing too many things to be triggered reliably.
 MAX_DESCRIPTION = 1024
@@ -394,6 +404,12 @@ def test_no_asset_hardcodes_an_absolute_developer_path():
     These files are shared and run on Ubuntu and Windows CI. An absolute path
     from one machine is both unreachable elsewhere and a small disclosure of
     the author's disk layout.
+
+    `docs/architecture/` is in scope, and it was not until an audit found
+    `E:\Ollama\ollama.exe` sitting in `C4.md` -- the same string this test was
+    written for, in the same repository, surviving because the file set stopped
+    at the `.claude` tree. The policy was never "skills may not do this"; it was
+    "this repository does not ship one developer's disk layout".
     """
     # `[\\/]`, with a doubled backslash, is load-bearing. An earlier draft had
     # `[\/]` -- a single one -- which inside a character class is just an
@@ -408,7 +424,7 @@ def test_no_asset_hardcodes_an_absolute_developer_path():
     assert unix_home.search("/home/someone/x"), "the unix-home pattern is broken"
 
     offenders = []
-    for path in [*SKILLS, *AGENTS, SETTINGS]:
+    for path in [*SKILLS, *AGENTS, SETTINGS, *ARCHITECTURE_DOCS]:
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if drive.search(line) or unix_home.search(line):
                 offenders.append(f"{path.name}:{number}")

@@ -71,9 +71,17 @@ not the same claim.
 
 **The three exit-code rows are the strongest result of the week**, and they are
 new since the first version of this document. `evidence/03-mcp-selfcheck.json`
-now reads `all_expected: true` from a real run of `planlint 0.2.0` against
-fixtures tracked under `configs/fixtures/planlint/`. Exit 1 in particular had
-never been demonstrated live against the real binary before.
+now reads `all_expected: true` from a real run of `planlint 0.2.0`. Exit 1 in
+particular had never been demonstrated live against the real binary before.
+
+One qualification a reviewer needs, and the first version of this rewrite did
+not give: **only two of the three legs are reproducible from this repository.**
+FINDINGS and BLOCKED point at fixtures tracked under
+`configs/fixtures/planlint/`; the PASS leg points at `SELFCHECK_PASS_TARGET`, a
+real OpenSpec repository on the operator's disk and outside this tree.
+`tests/regression/test_selfcheck_evidence.py` excuses that path from its
+citation check for exactly this reason. So the PASS row is true and was
+measured, and someone else cannot re-run it without supplying their own target.
 
 **The scorer rows are unit-proven only, and "end to end" is not established for
 that half.** No eval-harness sink artifact has ever been read. `score_run`'s
