@@ -36,7 +36,7 @@ print(tool_input.get("file_path") or "")
 # file's* directory -- discovered as `E:\Coding_Projects\...`, uppercase --
 # with each pattern, then compares it against the path it was handed. The two
 # differ only in the case of the drive letter, the glob does not match, and
-# every `S101` this project exempts for `tests/**` is reported as a violation.
+# every `S101` this project exempts for `**/tests/**` is reported as a violation.
 #
 # Reproduced exactly:
 #   ruff check "e:\...\tests\test_claude_assets.py"  -> 34 errors

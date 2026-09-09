@@ -51,9 +51,26 @@ ignore = [
 # allowlists these same files by path so the two tools agree on which vectors
 # are deliberate.
 "**/tests/**" = ["S101", "SLF001", "ARG001", "S105", "S106", "S107", "S603", "S607"]
-"tests/**" = ["S101", "SLF001", "ARG001", "S105", "S106", "S107"]
-# The selfcheck CLI prints to stdout on purpose; it is not the server.
-"**/__main__.py" = ["T201"]
+
+# Two entries were removed here, and this note exists so they are not re-added.
+#
+# `"tests/**"` was a strict subset of `"**/tests/**"` above -- the same list
+# minus S603/S607. Ruff applies every matching entry as a union, so the
+# narrower pattern could never subtract anything and contributed nothing. It
+# did contribute a false signal: the asymmetry read as a deliberate policy that
+# root-level tests are denied the subprocess exemption `mcp_server/tests/`
+# gets. That policy does not exist and was never enforced.
+#
+# `"**/__main__.py" = ["T201"]` was inert because `T20` is not in `select`
+# above, so `ruff check .` never raised the finding it suppressed. Enabling
+# `T20` to give it meaning would have been worse: it would cover 1 of the 5
+# modules that print to stdout on purpose (`scoring.py`, `probe/cli.py`,
+# `promote_trace.py` and `scan_evidence.py` are the others), buying four new
+# suppressions and no invariant. The invariant it gestured at -- stdout carries
+# only JSON-RPC on the server plane -- is already held by a test that spawns
+# the server and inspects the bytes:
+# `mcp_server/tests/test_server_e2e_stdio.py::test_stdout_carries_only_protocol_even_at_debug_level`.
+# A lint rule would be the weaker of the two guards.
 
 [tool.pyright]
 extraPaths = ["mcp_server/src", "scripts", "."]

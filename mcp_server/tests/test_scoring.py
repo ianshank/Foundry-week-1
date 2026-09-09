@@ -138,11 +138,24 @@ def test_unset_sink_is_blocked_not_a_keyerror(monkeypatch):
 
 
 def test_unreadable_verdict_value_is_not_guessed_into_a_boolean(sink):
+    """A verdict the wrapper cannot read must not become one it can.
+
+    The last three assertions were lost when the pinned schema landed and this
+    test was rewritten. They are the ones that matter: BLOCKED is a statement
+    that no opinion could be formed, so a `pass_rate` alongside it is a
+    contradiction, and a scorer list with anything in it means something was
+    counted. Without them a regression returning BLOCKED *with* `pass_rate:
+    1.0` passes -- which is the fabrication this module exists to prevent,
+    wearing a refusal as a disguise.
+    """
     sink("run-10", {"results": [{"scorer": "weird", "passed": 0.73}]})
     result = score_run("run-10")
     assert result["verdict"] == BLOCKED
     assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
     assert result["ignored"][0]["why"] == "scorer record has a non-boolean, non-null verdict"
+    assert result["pass_rate"] is None, "BLOCKED came with a pass rate"
+    assert result["scorers"] == [], "BLOCKED came with counted scorers"
+    assert result["counts"] == {"true": 0, "false": 0, "null": 0, "unreadable": 0}
 
 
 # --------------------------------------------------------------------------
@@ -150,11 +163,126 @@ def test_unreadable_verdict_value_is_not_guessed_into_a_boolean(sink):
 # from fabricating passes.
 # --------------------------------------------------------------------------
 
-def test_missing_results_array_is_blocked(sink):
-    sink("run-20", {"run_id": "run-20", "result": "pass", "scorers": [{"name": "s", "passed": True}]})
+def test_top_level_result_summary_does_not_fabricate_a_pass(sink):
+    """The phantom-scorer regression, restored to the name and shape it had.
+
+    `result` was once in `_PASSED_KEYS`, so a top-level summary field became a
+    scorer with `passed=True` and turned a null-only run into PASS with
+    `pass_rate: 1.0`. The pinned schema removed the walk that made that
+    possible, and in the rewrite this test lost its name and three of its four
+    assertions -- keeping only `verdict` and `blocked_reason`.
+
+    Two things were lost with them. The payload's `passed` was flipped `None`
+    -> `True`, so the fixture stopped constructing the null-only run that is
+    the whole scenario; it now only demonstrates a schema violation. And
+    nothing asserted `pass_rate`, so a regression returning BLOCKED with a
+    fabricated rate still passed.
+
+    The defect is greppable in history under this name again, which is the
+    other half of what a regression guard is for.
+
+    **What this test actually constrains, which is not what its name suggests.**
+    Re-adding `"result"` to `_PASSED_KEYS` leaves it green -- verified by
+    mutation. `_collect_scorers` refuses at the root before `_PASSED_KEYS` is
+    ever consulted, because this fixture carries `scorers:` and not `results:`.
+    So the named regression is now defended by two *other* mechanisms: the
+    root-`results` pin (see `test_a_results_list_nested_elsewhere_is_still_refused`,
+    which does go red when tolerance is restored) and `_normalise_passed`'s
+    refusal to read the string `"pass"` as a boolean (see below).
+
+    That is worth saying rather than quietly renaming the test. The pin made
+    the original defect unreachable, which is the outcome you want -- but a
+    guard whose stated subject is defended by something else is one refactor
+    away from being the only thing left, and then it would not fire.
+    """
+    sink(
+        "run-20",
+        {
+            "run_id": "run-20",
+            "result": "pass",
+            "scorers": [{"name": "trajectory_shape", "passed": None}],
+        },
+    )
     result = score_run("run-20")
     assert result["verdict"] == BLOCKED
     assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
+    assert result["pass_rate"] is None, "the top-level summary was counted as a pass"
+    assert result["scorers"] == []
+
+
+def test_a_summary_key_inside_a_scorer_record_is_not_read_as_a_verdict(sink):
+    """The `_PASSED_KEYS` half, reachable through the pinned schema.
+
+    The test above is named for the phantom-scorer defect but no longer detects
+    it, because the root-`results` pin refuses its fixture first. This one puts
+    a summary-shaped key *inside* a well-formed scorer record, which is the only
+    place `_PASSED_KEYS` is still consulted -- so it goes red if `"result"` is
+    re-added to that tuple and starts being read as a verdict.
+
+    The value has to be a **boolean**, and finding that out took a mutation.
+    With `result: "pass"` the mutation is invisible, because `_normalise_passed`
+    refuses the string regardless of which key it arrived under -- so that
+    fixture would have been a third test that does not detect the defect it
+    names. With `result: true` the mutation is observable:
+
+        baseline: BLOCKED  pass_rate=None
+        mutated : PASS     pass_rate=1.0
+
+    which is the fabricated pass, exactly as the original defect produced it.
+    """
+    sink("run-26", {"results": [{"scorer": "grounding", "result": True}]})
+    result = score_run("run-26")
+
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
+    assert result["pass_rate"] is None, "a summary key was read as a passing verdict"
+    assert result["scorers"] == []
+
+
+def test_a_summary_beside_a_valid_results_list_is_not_counted(sink):
+    """The failure mode the pin newly created, and which nothing tested.
+
+    The pin refuses an artifact with no root `results` list -- so every test
+    around it exercises *refusal*. That leaves the accepting path unexamined:
+    an artifact that has a perfectly good `results` list and also carries a
+    scorer-shaped summary field beside it. The old tolerant walk would have
+    found both and reported `pass_rate: 0.5` over one real result and one
+    phantom.
+
+    This is the case a real eval-harness artifact is most likely to have, and
+    the only one where the answer is a number rather than a refusal.
+    """
+    sink(
+        "run-23",
+        {
+            "summary": {"scorer": "overall", "passed": True},
+            "results": [{"scorer": "grounding", "passed": False}],
+        },
+    )
+    result = score_run("run-23")
+
+    assert result["verdict"] == FINDINGS
+    assert [record["scorer"] for record in result["scorers"]] == ["grounding"]
+    assert result["pass_rate"] == 0.0, "the summary field was counted as a passing scorer"
+    assert result["counts"] == {"true": 0, "false": 1, "null": 0, "unreadable": 0}
+
+
+def test_a_results_list_nested_elsewhere_is_still_refused(sink):
+    """The pin itself, pinned.
+
+    `{"run": {"results": [...]}}` is exactly what the old shape-tolerant walk
+    would have found and scored. Refusing it is the narrowing that
+    `decisions/0002` records, and this is the test that fails first if someone
+    restores tolerance to make a real artifact parse -- which is the correct
+    place for that to fail, and what makes the reversal condition enforceable
+    rather than aspirational.
+    """
+    sink("run-25", {"run": {"results": [{"scorer": "a", "passed": True}]}})
+    result = score_run("run-25")
+
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_ARTIFACT_SCHEMA
+    assert result["pass_rate"] is None
 
 def test_unnamed_scorer_record_is_refused(sink):
     sink("run-21", {"results": [{"passed": True}]})

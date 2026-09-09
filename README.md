@@ -81,18 +81,24 @@ scripts/
   probe/                    modular verifier probe package (cli, runner, screen, client, config)
   scan_evidence.py          the secret gate
   promote_trace.py          raw capture -> tracked evidence, only if it scans clean
-tests/                      what the repo asserts about itself: the .claude assets,
-                            the CLI entry points, evidence hygiene, the verifier screen,
-                            and the layered suites that landed with the probe split
-
-tests/                      enterprise 7-layer test suite (floors: 90% global, 80% per-file)
+tests/                      what the repo asserts about itself, in layers
+                            (floors: 90% global, 80% per file)
+  (root files)              the .claude and .agents assets, the CLI entry points,
+                            evidence hygiene, the verifier screen
   unit/                     Layer 1: modular component unit tests
   integration/              Layer 2: tool-function, filesystem, and probe pipeline flow
   functional/               Layer 3: planlint exit code-to-verdict mapping
-  e2e/                      Layer 4: CLI subprocess executions
+  e2e/                      Layer 4: CLI subprocess executions, plus the stdio server
+                            driven over real JSON-RPC (named explicitly by `make test-e2e`,
+                            because it lives under mcp_server/tests/ to stay standalone)
   journey/                  Layer 5: complete developer evaluation workflow simulation
   security/                 Layer 6: fuzzing path traversal, flag injections, secrets
   sanity/                   Layer 7: environment health, typing, and entrypoint sanity
+  regression/               Guard layer: one named, previously-fixed defect per test
+  aqa/                      Lane C (loopback HTTP) and lane D (live vendor, opt-in)
+mcp_server/tests/           the contract suite — outside the layer taxonomy on purpose,
+                            because it must also run standalone with neither scripts/
+                            nor tests/ importable
 
 .claude/                    skills (probe-evaluator, contract-guard, spike-validate), agents, hooks
 .agents/                    Antigravity / Gemini automation skills
@@ -101,7 +107,8 @@ Dockerfile                  reproducible regression env (NOT a way to run the se
 
 evidence/                   the four evidence files; *.template.md are the blanks
 traces/                     promoted captures; traces/raw/ is gitignored
-decisions/                  the exit artifact — one decision-log row
+decisions/                  the exit artifact (0001) plus the contract records
+                            it depends on (0002, the pinned sink schema)
 snippets/                   step 4.5 adapter candidate, parked and unmerged
 ```
 
@@ -121,12 +128,20 @@ rather than a constraint.
 reading four Playground cells, deciding which model laundered a failure,
 writing the verdict. The scaffolding removes the typing, not the thinking.
 
-**Deliberately unpinned:** the exact spelling of planlint's JSON flag
-(`PLANLINT_JSON_FLAG`, confirmed by `make baseline`) and the eval-harness sink
-schema (`_collect_scorers` walks tolerantly and returns BLOCKED on a shape it
-does not recognise, rather than an empty pass). Both get narrowed in session 3
-against real artifacts. Guessing them here would have produced code that looks
-finished and silently mis-reads.
+**Deliberately unpinned, and no longer:** both of these were left open at
+scaffold time and both have since been narrowed, so this paragraph now records
+what happened rather than what was planned.
+
+* planlint's JSON flag spelling (`PLANLINT_JSON_FLAG`) is **confirmed against
+  the real binary** — `evidence/00-planlint-flags.txt` records `--json` as an
+  alias of `--format json`.
+* The eval-harness sink schema is **pinned**, not tolerant. `_collect_scorers`
+  requires a root `results` list and refuses anything else with
+  `BLOCKED / unrecognized_artifact_schema`; the shape-tolerant walk this
+  paragraph used to describe has been removed. It was pinned **without** a real
+  artifact to pin it against, which is a live risk rather than a settled
+  question — `decisions/0002-pinned-sink-schema.md` records the shape, the
+  objection, and the condition under which the pin gets widened.
 
 ---
 

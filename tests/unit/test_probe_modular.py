@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
 from scripts.probe.client import EndpointError, _validate_endpoint, call_model
 from scripts.probe.config import (
+    HTTP_ERROR_DETAIL_CHARS,
     PROVIDERS,
     ProbeConfigError,
     Provider,
@@ -188,36 +190,49 @@ def test_runner_and_summary_generation(tmp_path):
     assert "HELD" in table
 
 
-def test_verifier_probe_fallback_import():
-    """Verify verifier_probe fallback imports when scripts.probe is unavailable."""
-    import importlib
-    import sys
+def test_the_facade_exports_exactly_what_the_package_does():
+    """`verifier_probe` is advertised as the backwards-compatible facade.
 
-    orig_scripts_probe = sys.modules.get("scripts.probe")
-    orig_vp = sys.modules.get("verifier_probe")
-    orig_scripts_vp = sys.modules.get("scripts.verifier_probe")
+    It was not one. `probe.__all__` listed `build_parser`, `build_summary`,
+    `format_report_table` and `run_probe_cells`; the facade neither imported
+    nor re-exported them, so `from verifier_probe import build_parser` raised
+    `ImportError` while the package advertised the name. And the facade
+    listed `urllib`, which `probe` does not export -- a facade that *adds*
+    surface is not a facade.
 
-    try:
-        sys.modules["scripts.probe"] = None  # type: ignore[assignment]  # Force ModuleNotFoundError on scripts.probe
-        sys.modules.pop("verifier_probe", None)
-        sys.modules.pop("scripts.verifier_probe", None)
+    This matters more than a tidy `__all__`: `verifier_probe` is the name in
+    `docs/architecture/C4.md`, two Makefile targets, two shipped skills and
+    one shipped agent. It is the published interface, and it was a strict
+    subset of the thing it fronts.
 
-        import verifier_probe
+    Three checks, because the first two alone allow a name to be listed and
+    never imported -- which is the shape the drift actually had.
+    """
+    import probe
+    import verifier_probe
 
-        importlib.reload(verifier_probe)
-        assert hasattr(verifier_probe, "screen")
-        assert hasattr(verifier_probe, "main")
-        assert hasattr(verifier_probe, "call_model")
-        assert hasattr(verifier_probe, "_post")
-    finally:
-        if orig_scripts_probe is not None:
-            sys.modules["scripts.probe"] = orig_scripts_probe
-        else:
-            sys.modules.pop("scripts.probe", None)
-        if orig_vp is not None:
-            sys.modules["verifier_probe"] = orig_vp
-        if orig_scripts_vp is not None:
-            sys.modules["scripts.verifier_probe"] = orig_scripts_vp
+    missing = sorted(set(probe.__all__) - set(verifier_probe.__all__))
+    assert not missing, f"probe exports {missing}; the facade does not"
+
+    extra = sorted(set(verifier_probe.__all__) - set(probe.__all__))
+    assert not extra, (
+        f"the facade exports {extra} that `probe` does not. A facade that "
+        "adds surface is not a facade."
+    )
+
+    unbound = [name for name in verifier_probe.__all__ if not hasattr(verifier_probe, name)]
+    assert not unbound, f"listed in __all__ and never imported: {unbound}"
+
+
+def test_the_facade_repo_root_is_the_package_repo_root():
+    """`REPO` is on the backwards-compatibility list and is bound twice --
+    once locally at module top, then again by the names imported from
+    `probe.config` (`parents[2]` there against `parents[1]` here, resolving to
+    the same directory). Pinned so a reordering cannot silently change it."""
+    import probe
+    import verifier_probe
+
+    assert verifier_probe.REPO == probe.REPO
 
 
 def test_verifier_probe_facade_helpers(monkeypatch):
@@ -236,3 +251,103 @@ def test_verifier_probe_facade_helpers(monkeypatch):
     res_call = verifier_probe.call_model("ollama:test", "sys", "user")
     assert res_call["called"] is True
     assert res_call["post_fn"] is not None
+
+
+# ---------------------------------------------------------------------------
+# The recovery paths somebody wrote and nobody fired.
+#
+# Each of these is an `except` arm whose comment explains a real failure and
+# whose body has never executed. A recovery path that has never run is a
+# hypothesis about what happens when things go wrong, not a behaviour -- and
+# these are the arms that decide whether a spent run is recorded or lost.
+# ---------------------------------------------------------------------------
+
+
+def test_a_transcript_that_cannot_be_written_does_not_lose_the_run(tmp_path, monkeypatch):
+    """The most expensive possible failure, per the code's own comment.
+
+    `runner.py` says it plainly: "The model has already been called and the
+    tokens already spent, so losing the run because the transcript could not be
+    written is the most expensive possible failure." The row stays in memory,
+    gets a `transcript_error`, and still reaches `summary.json`.
+
+    That reasoning was carried over from `cli.py`'s handling of `--out`, and the
+    comment notes it "was not carried through here" -- so the arm existed
+    because someone reasoned about it, and then nothing exercised it. This is
+    the difference between a recovery path and a recovery hypothesis.
+    """
+    real_write = Path.write_text
+
+    def _refuse_transcripts(self, *args, **kwargs):
+        if self.suffix == ".json" and self.parent == tmp_path:
+            raise OSError(28, "No space left on device")
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _refuse_transcripts)
+
+    rows = run_probe_cells(
+        slots=["ollama:unreachable-on-purpose"],
+        system="s",
+        user="u",
+        expect="FINDINGS",
+        out_dir=tmp_path,
+        timeout=1,
+        sampling={},
+        call_model_fn=lambda *_a, **_k: {"status": ERROR, "error": "no endpoint"},
+    )
+
+    assert len(rows) == 1, "the run was lost because a transcript could not be written"
+    assert "transcript_error" in rows[0], (
+        "the row survived but does not record that its transcript is missing, so "
+        "`summary.json` would describe a capture whose files are not there"
+    )
+    assert "No space left" in rows[0]["transcript_error"]
+
+
+def test_an_http_error_body_is_truncated_and_reported_as_a_row():
+    """A 401 from a vendor is a row, not an exception.
+
+    `docs/roadmap/2026-09-06-review.md` flags this branch as the one that can
+    carry a vendor's error body -- which may echo an `Authorization` header --
+    into `detail`. It had never executed, so neither the truncation nor the
+    reporting had ever been observed.
+    """
+    import urllib.error
+
+    def _unauthorised(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            url="http://localhost:11434/v1/chat/completions",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(b"x" * 5000),
+        )
+
+    row = call_model(
+        "ollama:qwen2.5:14b", "sys", "user", timeout=1, post_fn=_unauthorised
+    )
+
+    assert row["status"] == ERROR
+    assert row["error"] == "HTTP 401"
+    assert len(row["detail"]) <= HTTP_ERROR_DETAIL_CHARS, (
+        "a vendor error body reached `detail` untruncated; the whole body may "
+        "echo the request, and this row is written into a tracked transcript"
+    )
+
+
+def test_a_response_with_no_choices_is_an_error_row_not_a_crash():
+    """`{"choices": []}` is the realistic malformed vendor response.
+
+    A provider that returns 200 with an empty `choices` list -- rate limited,
+    content filtered, or just wrong -- must produce an ERROR row carrying the
+    raw body for a human, not an `IndexError` that ends the sweep with the
+    other slots unrun.
+    """
+    row = call_model(
+        "ollama:qwen2.5:14b", "sys", "user", timeout=1,
+        post_fn=lambda *_a, **_k: {"choices": []},
+    )
+
+    assert row["status"] == ERROR
+    assert "choices" in row["error"]
+    assert row["raw"] == {"choices": []}, "the body was not kept for diagnosis"

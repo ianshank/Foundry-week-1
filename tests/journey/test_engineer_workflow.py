@@ -12,7 +12,6 @@ User Journey stages:
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -26,7 +25,9 @@ from foundry_spike_mcp.scoring import score_run
 from foundry_spike_mcp.verdicts import PASS
 
 
-def test_complete_engineer_workflow_journey(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_complete_engineer_workflow_journey(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_stub
+):
     # Setup working directory structure
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -51,19 +52,14 @@ Defines safety barriers for tool execution.
     )
 
     # --- Stage 2: Engineer lints spec with planlint wrapper ---
-    # Configure mock planlint binary
-    bin_dir = workspace / "bin"
-    bin_dir.mkdir()
-    py_script = bin_dir / "planlint_mock.py"
-    py_script.write_text('import json; print(json.dumps({"findings": []}))\n', encoding="utf-8")
-    if sys.platform == "win32":
-        planlint_bin = bin_dir / "mock_planlint.bat"
-        planlint_bin.write_text(f'@"{sys.executable}" "{py_script}" %*')
-    else:
-        import stat
-        planlint_bin = bin_dir / "mock_planlint"
-        planlint_bin.write_text(f"#!{sys.executable}\nimport json; print(json.dumps({{'findings': []}}))\n", encoding="utf-8")
-        planlint_bin.chmod(planlint_bin.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    # Built through the canonical factory rather than hand-rolled. The
+    # inline launcher this replaces wrote a `.bat` with no `PYTHONUTF8=1`
+    # -- D-02b, in the journey test that exists to walk the whole workflow.
+    planlint_bin = make_stub(
+        "import json, sys" + chr(10) +
+        "sys.stdout.buffer.write(json.dumps({'findings': []}).encode('utf-8'))" + chr(10),
+        name="mock_planlint",
+    )
 
     planlint_cfg = PlanlintConfig(
         binary=str(planlint_bin),

@@ -14,6 +14,7 @@ from .config import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
     DEFAULT_TIMEOUT,
+    HTTP_ERROR_DETAIL_CHARS,
     PROVIDERS,
 )
 from .screen import ERROR, OK
@@ -92,7 +93,7 @@ def call_model(
     try:
         body = actual_post(f"{base}/chat/completions", payload, headers, timeout)
     except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")[:600]
+        detail = error.read().decode("utf-8", errors="replace")[:HTTP_ERROR_DETAIL_CHARS]
         return {"status": ERROR, "error": f"HTTP {error.code}", "detail": detail}
     except EndpointError as error:
         return {"status": ERROR, "error": f"refused endpoint: {error}"}

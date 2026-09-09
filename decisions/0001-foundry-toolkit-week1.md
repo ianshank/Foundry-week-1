@@ -1,4 +1,4 @@
-# 0001 — Foundry Toolkit: keep as sidecar, or drop
+# 0001 — Foundry Toolkit: keep as sidecar, bench only, or drop
 
 **Status:** OPEN — closed by `evidence/05-verdict.md` at the end of session 5
 **Opened:** 2026-09-05
@@ -59,10 +59,11 @@ week as a success, not a failure:
 |---|---|
 | `evidence/00-toolkit-version.txt` | `make baseline` — session 1 |
 | `evidence/00-dialect-card.json` | `make baseline` — session 1 |
-| `evidence/02-bakeoff.md` | session 2, from the template |
-| `evidence/03-mcp-selfcheck.json` | `make selfcheck` — session 3 |
-| `traces/` | session 5, four probe conversations |
+| `evidence/02-bakeoff.md` | session 2, from the template — **exists as of 2026-09-08**; ten of twelve matrix cells read `not run` |
+| `evidence/03-mcp-selfcheck.json` | `make selfcheck` — session 3; `all_expected: true` against the real binary |
+| `traces/` | session 5, four probe conversations — **one capture, and it is a headless step-2 probe, not an agent conversation** |
 | `evidence/05-verdict.md` | session 5, from the template |
+| `decisions/0002-pinned-sink-schema.md` | 2026-09-08; the pin `score_run` shipped without a record |
 
 ---
 
@@ -72,5 +73,59 @@ week as a success, not a failure:
 
 **Outcome:**
 **Date:**
+
+<!-- Outcome and Date are deliberately blank. This row is a human gate and
+     signing it is not something the test suite, or anything that runs in CI,
+     can do. Everything below is drafted so that closing it is a matter of
+     choosing a line and dating it. -->
+
+### Scorecard against the four criteria above
+
+| # | Criterion | Answer | Resting on |
+|---|---|---|---|
+| 1 | At least one model holds the verifier probe | **met, narrowly** | one model, one prompt, one run; screen is advisory and unaudited — `traces/20260905T191215Z-02-verifier/` |
+| 2 | Wrapper preserves 0/1/2 and `true`/`false`/`null` end to end | **half** | 0/1/2 live-proven against `planlint 0.2.0`; the scorer half is unit-proven only and no sink artifact has ever been read |
+| 3 | No probe requires weakening the tool contract | **not established** | the four agent probes were never run; no agent was built |
+| 4 | The Playground gives a faster read than the existing bench | **not measured** | Compare and Show resource usage were never used at all |
+
+### The three lines this row may take
+
+Spelled as `evidence/05-verdict.template.md` §5 spells them, so the two
+documents cannot offer different vocabularies:
+
+* **keep as sidecar** — proceed to a week-2 hosted twin; §6 of the verdict then
+  becomes a budget request rather than a note. **This is what
+  `evidence/05-verdict.md` §5 proposes.**
+* **bench only** — the Playground earns a place as a local bake-off bench and
+  Foundry adds nothing to governance. The template routes here on stop
+  condition 1 or an *unmet* criterion 4; neither applies, since condition 1 did
+  not fire and criterion 4 is *not measured*, which is a distinct third answer.
+  It remains a defensible choice on a different argument: one slot ran, so the
+  comparative claim is unsupported — the wording `NEXT_STEPS.md` sanctions.
+* **drop** — it adds nothing the existing bench does not. Note this also needs
+  criterion 4 measured: concluding "adds nothing" from "never measured" is the
+  same fabrication pointed the other way.
+
+Two of the three end the week early and the week still counts as a success.
+Only an unwritten verdict is a failure.
+
 **Reason:**
+
+<!-- Cite the verdict's sections by number. `evidence/05-verdict.md` §5 carries
+     the proposed reasoning and, more usefully, the list of claims the
+     recommendation does NOT rest on. -->
+
 **Follow-up:**
+
+<!-- The three things that would change this answer, none of which can be done
+     from a terminal on the machine that produced this tree:
+
+     1. A reachable Ollama endpoint closes the exit-2 cell in one command and
+        speaks directly to stop condition 1. Cheapest by a wide margin.
+     2. A human at VS Code Agent Builder is the only route to criterion 3 (the
+        four probes), criterion 4 (the two timings), and session 3's "both
+        tools list in Agent Builder" clause.
+     3. `judge_calibration.calibration_artifact_id` is blocked outside this
+        repository and gates criterion 2's scorer half. If it turns out to
+        need harness changes rather than a config field, that is runbook stop
+        condition 3 and should be recorded as one, not worked around. -->

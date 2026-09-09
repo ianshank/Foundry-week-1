@@ -18,12 +18,21 @@ from dataclasses import replace
 
 import pytest
 
-from foundry_spike_mcp.config import load_planlint_config
-from foundry_spike_mcp.planlint import detect_dialect, lint_openspec
+from foundry_spike_mcp import planlint as planlint_module
+from foundry_spike_mcp.config import CONFIG_ERROR_DETAIL_LIMIT, load_planlint_config
+from foundry_spike_mcp.planlint import (
+    _RESULT_KEYS,
+    _decode,
+    detect_dialect,
+    lint_openspec,
+    run_verb,
+)
 from foundry_spike_mcp.verdicts import (
     BLOCKED,
+    BLOCKED_CONFIG_ERROR,
     BLOCKED_GUARD_REJECTED,
     BLOCKED_PRECONDITION,
+    BLOCKED_PROCESS_ERROR,
     BLOCKED_TIMEOUT,
     BLOCKED_TOOL_NOT_FOUND,
     BLOCKED_UNEXPECTED_EXIT,
@@ -679,7 +688,16 @@ def test_undecodable_bytes_on_stdout_are_a_verdict_not_an_exception(tmp_path, co
     )
     if sys.platform == "win32":
         bat = script_dir / "planlint-raw-bytes.bat"
-        bat.write_text(f'@"{sys.executable}" "{py_script}" %*')
+        # `PYTHONUTF8=1` even though this body writes only through
+        # `sys.stdout.buffer`. The rule the guard in
+        # `tests/regression/test_regression_suite.py` enforces is
+        # unconditional on purpose: 'every .bat sets it' needs no reasoning
+        # about whether a given payload happens to be safe, and it was the
+        # per-site reasoning that let D-02 survive in four places.
+        bat.write_text(
+            '@set PYTHONUTF8=1' + chr(13) + chr(10)
+            + f'@"{sys.executable}" "{py_script}" %*'
+        )
         binary = str(bat)
     else:
         sh = script_dir / "planlint-raw-bytes"
@@ -696,3 +714,283 @@ def test_undecodable_bytes_on_stdout_are_a_verdict_not_an_exception(tmp_path, co
     assert result["exit_code"] == 1
     assert result["findings"] is None
     assert result["findings_parse_error"]
+
+
+# ---------------------------------------------------------------------------
+# The three `_blocked` sites nothing pinned.
+#
+# `BLOCKED_PROCESS_ERROR` had exactly one reference in the whole repository:
+#
+#     assert result["blocked_reason"] in {"process_error", BLOCKED_TOOL_NOT_FOUND}
+#
+# a hardcoded string in a two-way disjunction. It is defensible as written --
+# executing a directory raises `PermissionError` on POSIX and can raise either
+# error on Windows -- and that is exactly what made it dangerous. The arm was
+# executed on every single run and pinned by nothing: mutating
+# `BLOCKED_PROCESS_ERROR` to `BLOCKED_TOOL_NOT_FOUND` at the raise site leaves
+# that assertion green. A guard that looks like coverage is worse than a gap,
+# because a gap gets noticed.
+#
+# Two of the three sites were never reached at all: the `FileNotFoundError` arm
+# and the read-failure arm.
+#
+# These tests pass against the current tree -- the code is correct, only the
+# coverage was absent -- so each carries a mutation receipt in the PR body: the
+# one-line source change that must turn it red.
+# ---------------------------------------------------------------------------
+
+
+def test_a_process_the_os_refuses_to_start_is_blocked_with_process_error(
+    monkeypatch, configured, fake_planlint
+):
+    """The `OSError`-on-spawn arm, pinned to its exact reason.
+
+    `PermissionError` is an `OSError`, so this is the arm a real ENOEXEC or a
+    permission-denied binary takes. The envelope must still be complete: a
+    result missing keys is the F5 defect, and a caller branching on a key that
+    might not be there gets `None` silently.
+    """
+    configured(fake_planlint(exit_code=0))
+
+    def _refuse(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(subprocess, "Popen", _refuse)
+
+    result = lint_openspec()
+
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_PROCESS_ERROR
+    assert result["exit_code"] is None
+    assert "PermissionError" in result["blocked_detail"]
+    assert set(_RESULT_KEYS) <= set(result)
+
+
+def test_a_missing_binary_is_tool_not_found_and_not_process_error(
+    monkeypatch, configured, fake_planlint
+):
+    """The near-miss that makes the test above worth having.
+
+    `FileNotFoundError` is also an `OSError`, and it has its own arm and its own
+    reason -- "the binary is not there" and "the OS refused to run it" are
+    different operator problems with different fixes. Neither the ordering of
+    the two `except` clauses nor the distinction between the reasons was
+    pinned; the one existing assertion accepted either answer for either cause.
+    """
+    configured(fake_planlint(exit_code=0))
+
+    def _absent(*_args, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(subprocess, "Popen", _absent)
+
+    result = lint_openspec()
+
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_TOOL_NOT_FOUND
+    assert result["exit_code"] is None
+
+
+def test_the_two_process_failure_reasons_are_distinct_values():
+    """The near-miss above is only meaningful while these differ.
+
+    `assert blocked_reason != BLOCKED_PROCESS_ERROR` used to sit beside
+    `== BLOCKED_TOOL_NOT_FOUND` in that test, where it was entailed by its
+    neighbour and constrained nothing. The fact worth pinning is that the two
+    constants are different strings at all -- "the binary is not there" and
+    "the OS refused to run it" are different operator problems, and collapsing
+    them would silently make every disjunction over the pair vacuous.
+    """
+    assert BLOCKED_TOOL_NOT_FOUND != BLOCKED_PROCESS_ERROR
+
+
+class _DiesMidStream:
+    """A child whose stream read fails part-way through.
+
+    Not a mock of `communicate`: a stand-in object with the two attributes the
+    wrapper touches on this path, so the test exercises the wrapper's real
+    reaping logic rather than asserting that a mock was called.
+    """
+
+    returncode = None
+    pid = -1
+
+    def __init__(self) -> None:
+        self.killed = False
+        self.terminated = False
+
+    def communicate(self, **_kwargs):
+        raise OSError(5, "Input/output error")
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def wait(self, **_kwargs):
+        return -9
+
+    def poll(self):
+        return None
+
+
+def test_a_read_failure_mid_stream_is_blocked_and_still_reaps_the_child(
+    monkeypatch, configured, fake_planlint
+):
+    """Two facts, neither of which was checked.
+
+    The verdict is BLOCKED with `process_error` -- not a fabricated PASS from a
+    half-read stream. And `_end_process_tree` still runs: a wrapper that returns
+    a correct verdict while orphaning the process it spawned is the same leak
+    the `Popen`-rather-than-`run` comment exists to prevent, arriving through
+    the other exception arm.
+
+    `_CAN_KILL_GROUPS` is forced False so the reaping path is the same on
+    Windows and POSIX; the group-kill branch has its own coverage.
+    """
+    child = _DiesMidStream()
+    configured(fake_planlint(exit_code=0))
+    monkeypatch.setattr(planlint_module, "_CAN_KILL_GROUPS", False)
+    monkeypatch.setattr(subprocess, "Popen", lambda *_a, **_k: child)
+
+    result = lint_openspec()
+
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_PROCESS_ERROR
+    assert "OSError" in result["blocked_detail"]
+    assert child.killed or child.terminated, (
+        "the read failed and the child was never reaped -- the wrapper returned "
+        "a verdict and left a process behind"
+    )
+
+
+# ---------------------------------------------------------------------------
+# `ConfigError -> BLOCKED_CONFIG_ERROR` on the planlint plane.
+#
+# The identical path for `score_run` is tested in `test_scoring_branches.py`.
+# The planlint half of the same shared contract never got the same test, which
+# is a real asymmetry between two tools that are supposed to answer in one
+# vocabulary.
+#
+# Driven through the environment variables an operator actually sets, not
+# through a patched loader. A patched loader tests the handler; a bad variable
+# tests the path someone reaches at 11pm.
+# ---------------------------------------------------------------------------
+
+
+def test_an_unparseable_timeout_is_blocked_not_defaulted(configured, fake_planlint):
+    """A malformed setting must refuse, never silently fall back to a default.
+
+    Falling back would mean the wrapper ran with a timeout the operator did not
+    choose and reported a verdict as though it had -- a result formed under
+    conditions nobody asked for, which is the soft form of the failure this
+    repository exists to detect.
+    """
+    configured(fake_planlint(exit_code=0), PLANLINT_TIMEOUT="soon")
+
+    result = lint_openspec()
+
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_CONFIG_ERROR
+    assert result["exit_code"] is None
+    assert len(result["blocked_detail"]) <= CONFIG_ERROR_DETAIL_LIMIT
+
+
+def test_a_relative_allowed_root_is_a_configuration_error(configured, fake_planlint):
+    """`PLANLINT_ALLOWED_ROOTS` must be absolute, and saying so is the fix.
+
+    A relative root cannot be compared against a resolved target, so accepting
+    one would make the allow list mean something different depending on the
+    working directory -- an allow list whose meaning moves is not an allow list.
+    """
+    configured(fake_planlint(exit_code=0), PLANLINT_ALLOWED_ROOTS="relative/path")
+
+    result = lint_openspec()
+
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_CONFIG_ERROR
+
+
+# ---------------------------------------------------------------------------
+# `assert_safe_argv`'s rejection arm.
+#
+# One of three producers of `BLOCKED_GUARD_REJECTED`, and the only one that had
+# never run -- while the constant looks thoroughly tested, with fifteen
+# references, all reaching the `check_verb` and `check_target` sites instead.
+# ---------------------------------------------------------------------------
+
+
+def test_a_denied_flag_cannot_be_injected_through_the_json_flag_setting(
+    configured, fake_planlint
+):
+    """The other half of "policy is not configuration", on the plane the static
+    test cannot reach.
+
+    `test_policy_is_not_configuration.py` proves the constants cannot be widened
+    by setting a variable. This proves the *argv assembly site* honours them:
+    `PLANLINT_JSON_FLAG` is an operator-settable string spliced into argv by
+    `shlex.split`, so it is the one real lever an operator has on what the
+    subprocess is handed. `assert_safe_argv` is the belt-and-braces check
+    standing between it and the mutating flags `DENIED_FLAGS` exists to refuse,
+    and until now nothing had ever driven it.
+
+    The verdict has to be BLOCKED, not an exception: `run_verb`'s docstring
+    says a refusal is a verdict, and a `GuardRejection` escaping the wrapper
+    would be a framework error with no verdict field at all.
+    """
+    configured(fake_planlint(exit_code=0), PLANLINT_JSON_FLAG="--force")
+
+    result = lint_openspec()
+
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_GUARD_REJECTED
+    assert result["exit_code"] is None
+    assert "denied_flag" in result["blocked_detail"], (
+        f"expected the denied-flag rejection, got {result['blocked_detail']!r}"
+    )
+
+
+def test_run_verb_called_directly_also_blocks_on_a_bad_config(configured, fake_planlint):
+    """`run_verb` has its own `ConfigError` arm, and it is not the one above.
+
+    Found by measuring rather than assuming. `lint_openspec` loads the config
+    itself and hands it to `run_verb`, so `run_verb`'s own load -- and its own
+    refusal -- never runs on that path. It is reachable, though: `run_verb` is
+    public, the five non-`validate` verbs go through it, and
+    `test_all_allowed_verbs_reach_subprocess` calls it directly.
+
+    Two entry points to one tool, two config-loading sites, and only one of them
+    was ever exercised. A wrapper whose second door has no lock is not locked.
+    """
+    configured(fake_planlint(exit_code=0), PLANLINT_TIMEOUT="soon")
+
+    result = run_verb("validate")
+
+    assert result["verdict"] == BLOCKED
+    assert result["blocked_reason"] == BLOCKED_CONFIG_ERROR
+    assert result["exit_code"] is None
+
+
+@pytest.mark.parametrize(
+    ("stream", "expected"),
+    [
+        (None, ""),
+        (b"plain bytes", "plain bytes"),
+        (b"\xff\xfe invalid", "\ufffd\ufffd invalid"),
+        ("already text", "already text"),
+        (b"", ""),
+    ],
+    ids=["none", "bytes", "undecodable-bytes", "str", "empty-bytes"],
+)
+def test_decode_never_raises_whatever_the_stream_turns_out_to_be(stream, expected):
+    """`_decode`'s docstring neighbour promises "Never raises"; nothing checked it.
+
+    Only the `str` arm ran under the suite, because `Popen` is opened in text
+    mode -- so the `None` and `bytes` arms existed for the paths where it is
+    not, and had never been executed. `None` is what `communicate` returns for
+    a stream that was never piped, and raw bytes are what arrives if the text
+    mode is ever removed. Either one reaching `str()` unguarded would put
+    `b'...'` or `None` into the evidence as though it were output.
+    """
+    assert _decode(stream) == expected

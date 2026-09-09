@@ -17,7 +17,6 @@ passes silently in a terminal and fails a pipeline.
 from __future__ import annotations
 
 import json
-import stat
 import sys
 from pathlib import Path
 
@@ -33,31 +32,36 @@ from foundry_spike_mcp import __main__ as spike_main  # noqa: E402
 
 
 @pytest.fixture
-def fake_planlint(tmp_path: Path) -> Path:
+def fake_planlint(make_stub) -> Path:
     """A stand-in planlint: exit 2 with no openspec/ tree, 1 for a 'find'
-    target, 0 otherwise. Mirrors the real three-way contract."""
-    script = tmp_path / "bin" / "planlint"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    py_script = tmp_path / "bin" / "planlint.py"
-    py_script.write_text(
+    target, 0 otherwise. Mirrors the real three-way contract.
+
+    Built through `tests/conftest.py::make_stub`, the canonical cross-platform
+    executable factory, rather than hand-rolling a fourth launcher. The version
+    this replaces wrote a `.bat` with no `PYTHONUTF8=1` and emitted its payload
+    with `sys.stdout.write` / `print` -- both halves of D-02, in a fixture two
+    directories from the guards that exist to prevent them.
+
+    Unreachable in practice here, because this body's payload is fixed ASCII
+    with no caller parameter. Fixed anyway: "unreachable today" is how the
+    other three copies of this defect were justified, and one of them turned
+    out to take a caller-supplied payload.
+    """
+    return make_stub(
         "import json, os, sys\n"
         "target = sys.argv[sys.argv.index('--target') + 1]\n"
         "if not os.path.isdir(os.path.join(target, 'openspec')):\n"
-        "    sys.stderr.write('error: no openspec/ directory\\n')\n"
-        "    sys.stdout.write('usage: planlint --target PATH validate\\n')\n"
+        "    sys.stderr.buffer.write(b'error: no openspec/ directory\\n')\n"
+        "    sys.stdout.buffer.write(b'usage: planlint --target PATH validate\\n')\n"
         "    sys.exit(2)\n"
         "if 'find' in target:\n"
-        "    print(json.dumps({'findings': [{'rule': 'SPEC012'}]})); sys.exit(1)\n"
-        "print(json.dumps({'findings': []})); sys.exit(0)\n",
-        encoding="utf-8",
+        "    sys.stdout.buffer.write(\n"
+        "        json.dumps({'findings': [{'rule': 'SPEC012'}]}).encode('utf-8')\n"
+        "    )\n"
+        "    sys.exit(1)\n"
+        "sys.stdout.buffer.write(json.dumps({'findings': []}).encode('utf-8'))\n"
+        "sys.exit(0)\n"
     )
-    if sys.platform == "win32":
-        bat_script = tmp_path / "bin" / "planlint.bat"
-        bat_script.write_text(f'@"{sys.executable}" "{py_script}" %*')
-        return bat_script
-    script.write_text(f"#!/usr/bin/env {sys.executable}\n" + py_script.read_text(), encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return script
 
 
 # ------------------------------------------------- foundry_spike_mcp selfcheck
@@ -165,6 +169,57 @@ def test_selfcheck_reports_skipped_cases_rather_than_pretending_they_passed(
     skipped = [c for c in report["cases"] if c.get("skipped")]
     assert [c["case"] for c in skipped] == ["pass"]
     assert report["all_expected"] is False
+
+
+def test_selfcheck_records_why_it_could_not_load_a_config_rather_than_hiding_it(
+    monkeypatch, tmp_path, fake_planlint, capsys
+):
+    """`report["config_error"]` is the field an operator reads to find out why
+    the server will not work, and no test had ever seen it populated.
+
+    `_selfcheck` catches `ConfigError` -- narrowed from a bare `ValueError`,
+    which was one refactor away from swallowing an unrelated error and
+    reporting a misconfigured run as a clean one -- and records the reason
+    instead of discarding it. Both halves matter and neither was checked: that
+    the field appears and says something, and that the run still produces three
+    cases with a non-zero exit rather than crashing.
+
+    A self-check that hides why it fell back is the failure mode this file
+    exists to detect, wearing the costume of the tool that detects it.
+    """
+    _selfcheck_env(monkeypatch, tmp_path, fake_planlint)
+    monkeypatch.setenv("PLANLINT_ALLOWED_ROOTS", "relative/not/absolute")
+
+    exit_code = spike_main.main(["selfcheck"])
+    report = json.loads(capsys.readouterr().out)
+
+    assert report.get("config_error"), (
+        "the config failed to load and the report says nothing about it"
+    )
+    assert "relative" in report["config_error"] or "absolute" in report["config_error"], (
+        f"the recorded reason does not name the problem: {report['config_error']!r}"
+    )
+    assert [case["case"] for case in report["cases"]] == ["pass", "findings", "blocked"], (
+        "a bad config must not silently shorten the report"
+    )
+    assert exit_code != 0, "a self-check that could not load its config is not a pass"
+
+
+def test_selfcheck_omits_config_error_entirely_when_the_config_loads(
+    monkeypatch, tmp_path, fake_planlint, capsys
+):
+    """The falsifier for the test above.
+
+    Without this, the assertion `report.get("config_error")` would be satisfied
+    by a field that is always present -- and a permanently-populated
+    "something went wrong" field says nothing at all.
+    """
+    _selfcheck_env(monkeypatch, tmp_path, fake_planlint)
+
+    assert spike_main.main(["selfcheck"]) == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert "config_error" not in report
 
 
 def test_selfcheck_writes_the_evidence_file(monkeypatch, tmp_path, fake_planlint, capsys):

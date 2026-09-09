@@ -27,59 +27,41 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 from typing import Any
 
-# The dual-import fallback arrived with the probe decomposition on main and is
-# kept as landed: `tests/integration/` drives this module with its own sys.path
-# setup and relies on it. The two names this branch added are threaded through
-# both arms, so the fallback cannot silently import a different surface from
-# the primary path.
-try:
-    from . import guards
-    from .config import (
-        CONFIG_ERROR_DETAIL_LIMIT,
-        ConfigError,
-        EvalConfig,
-        load_eval_config,
-    )
-    from .logging_setup import get_logger, log_result
-    from .verdicts import (
-        BLOCKED,
-        BLOCKED_ARTIFACT_MISSING,
-        BLOCKED_ARTIFACT_SCHEMA,
-        BLOCKED_ARTIFACT_UNREADABLE,
-        BLOCKED_CONFIG_ERROR,
-        BLOCKED_GUARD_REJECTED,
-        BLOCKED_NO_SCORED_RESULTS,
-        BLOCKED_NOTE,
-        FINDINGS,
-        PASS,
-    )
-except (ImportError, ValueError):
-    _src = str(Path(__file__).resolve().parents[1])
-    if _src not in sys.path:
-        sys.path.insert(0, _src)
-    from foundry_spike_mcp import guards
-    from foundry_spike_mcp.config import (
-        CONFIG_ERROR_DETAIL_LIMIT,
-        ConfigError,
-        EvalConfig,
-        load_eval_config,
-    )
-    from foundry_spike_mcp.logging_setup import get_logger, log_result
-    from foundry_spike_mcp.verdicts import (
-        BLOCKED,
-        BLOCKED_ARTIFACT_MISSING,
-        BLOCKED_ARTIFACT_SCHEMA,
-        BLOCKED_ARTIFACT_UNREADABLE,
-        BLOCKED_CONFIG_ERROR,
-        BLOCKED_GUARD_REJECTED,
-        BLOCKED_NO_SCORED_RESULTS,
-        BLOCKED_NOTE,
-        FINDINGS,
-        PASS,
-    )
+# Imported relatively, with no fallback arm.
+#
+# There was one, guarded by `except (ImportError, ValueError)`, whose own
+# comment said `tests/integration/` relied on it. That file's docstring says
+# the opposite -- "sys.path is managed by pytest.ini pythonpath and
+# tests/conftest.py" -- and an import tracer run from the repo root, from
+# inside `scripts/`, and under the Docker `contract` stage's invocation never
+# reached it. Coverage agreed: the entire arm was unexecuted.
+#
+# Deleting it also removes a hazard. `ConfigError` subclasses `ValueError`
+# (`config.py`), so that handler was one module-level config call away from
+# swallowing a misconfiguration and silently retrying the import -- turning
+# an operator mistake into a mysterious ImportError.
+from . import guards
+from .config import (
+    CONFIG_ERROR_DETAIL_LIMIT,
+    ConfigError,
+    EvalConfig,
+    load_eval_config,
+)
+from .logging_setup import get_logger, log_result
+from .verdicts import (
+    BLOCKED,
+    BLOCKED_ARTIFACT_MISSING,
+    BLOCKED_ARTIFACT_SCHEMA,
+    BLOCKED_ARTIFACT_UNREADABLE,
+    BLOCKED_CONFIG_ERROR,
+    BLOCKED_GUARD_REJECTED,
+    BLOCKED_NO_SCORED_RESULTS,
+    BLOCKED_NOTE,
+    FINDINGS,
+    PASS,
+)
 
 #: Keys that may hold a scorer's name, in preference order.
 _NAME_KEYS = ("scorer", "scorer_name", "name", "scorer_id", "id")

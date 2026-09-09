@@ -9,6 +9,116 @@ to lose by accident.
 
 ## [Unreleased]
 
+### Fixed (the paperwork: this repository's own exit artifacts)
+
+Six generations of entries below this one record engineering. Not one of them
+records a session-1-to-5 deliverable, and the only week-work item in the whole
+file was filed under *Fixed*, as the correction of a fabricated artifact. This
+entry is the same shape and says so: what follows is a repair, not progress.
+
+- **`evidence/02-bakeoff.md` did not exist.** It is cited by `decisions/0001`,
+  `RUNBOOK.md`, `NEXT_STEPS.md`, `traces/.../summary.json` and
+  `scripts/promote_trace.py`, and `git log --all --diff-filter=A` shows it was
+  never added on any ref. The template had been filled *in place* instead --
+  its first line still read `<!-- Copy to evidence/02-bakeoff.md -->` while its
+  matrix cells carried answers and its done-when boxes were ticked. The
+  template is restored pristine from `2ac6e39` (verified: every intervening
+  change was a blank-to-content fill, so nothing is lost, and the slot-D
+  guidance comment that had been overwritten with an answer comes back), and
+  the record is authored separately.
+
+- **A fabricated resource row.** The bake-off recorded `~15,000ms` and `9.0 GB`
+  peak VRAM, annotated "Measured via script." The only committed measurement is
+  `latency_ms: 47859`, and a grep for `vram`, `gpu_mem` and `memory_used`
+  across `scripts/` and `mcp_server/src/` returns nothing -- **no code in this
+  repository captures VRAM at all**. Both figures were invented and the
+  annotation was false.
+
+- **Four ticked completion boxes over eighteen `not run` cells**, including
+  "Matrix complete (no blank cells)". All four are now unticked, and the two
+  that are arguably satisfied are unticked deliberately: a reader scanning four
+  boxes with two ticks reads "half done" rather than "one model, one prompt,
+  one run, and no comparison".
+
+- **The verdict claimed four results that do not exist.** `evidence/05-verdict.md`
+  marked all four agent probes `Passed: Yes / Contract change needed: None`
+  though no agent was ever built; named a winner for three prompts on one
+  prompt's evidence; answered "models that mishandled exit 2: None" for a
+  fixture no model has ever been shown; and marked "the verdict survived the
+  trip into the model" as `Yes` citing `traces/` -- a citation that resolves
+  while the claim does not, because `traces/` holds one headless HTTP probe.
+
+  Rewritten from its own template. Section 2 gains a **Basis** column, because
+  `Yes` was doing two jobs -- live against the real binary, and unit-tested --
+  and those are different claims. Section 2b and `**Claims this recommendation
+  does NOT rest on:**` are restored; `NEXT_STEPS.md` recorded adding 2b as
+  *Fixed*, and that fix had landed in the template only, so the record went on
+  not answering the question while the form asking it sat beside the file.
+
+  **The recommendation is unchanged: keep as sidecar.** The template routes to
+  `bench only` on "stop condition 1 or an *unmet* criterion 4"; condition 1 did
+  not fire and criterion 4 is *not measured*, which the template lists as a
+  distinct third value whose only stated consequence is that the comparative
+  claim does not appear in section 5. It does not appear. What changed is
+  everything underneath the recommendation that was not established.
+
+- **`README.md` advertised the opposite of the shipped code.** It described the
+  sink schema as "deliberately unpinned -- `_collect_scorers` walks tolerantly",
+  while `scoring.py` says the tolerant walk "has been removed" and the pin "is
+  the contract now". Reconciled.
+
+- **`decisions/0002` was required and never written.** `NEXT_STEPS.md` said the
+  pin must land *with* a record of the pinned shape; it landed without one.
+  Written now, as ACCEPTED with a stated reversal condition, and recording the
+  objection that lost: the shape is taken from documentation, **not from any
+  real artifact**, because none has ever been produced.
+
+### Added (the guards that would have caught the above)
+
+- **Four template-discipline rules** in `tests/regression/test_selfcheck_evidence.py`,
+  which forward-references this idea at its own line 150. No `- [x]` in a
+  template; every template has a counterpart; every heading and `**Bold
+  label:**` in a template appears in its counterpart; no ticked completion box
+  over a cell that says the work was not done. Three were red on this tree when
+  written, and together they named fourteen findings -- which became the repair
+  checklist above, produced mechanically rather than from memory.
+
+  **A `scripts/check_evidence.py` with nine rules and a waiver idiom was
+  designed for this and rejected on measurement.** Nine rules produced fourteen
+  raw hits but only *two* distinct defects, because four of them fire on the
+  same single act. The cited-path rule needed six waivers per true positive
+  (prose references to another repository's files, ADR shorthand, a citation
+  that resolves correctly *document*-relative, `<timestamp>` placeholders, and
+  absolute machine paths that resolve on Windows and fail on Linux -- the
+  platform-bound citation-guard class already fixed once in `132bd60`). A
+  `Yes`-must-cite-a-path rule was net negative: four false positives, and it
+  *passed* the worst claim in the tree. A quoted-latency rule could not fire at
+  all, because nothing in scope cites a `summary.json`. Four asserts in an
+  existing file, no new script, no waiver engine, no coverage burden.
+
+### Changed
+
+- `traces/index.md` records slot, screen, declared and expected verdict, and
+  latency per capture, plus what was *not* promoted and why. Its preamble
+  called the contents "raw"; they are promoted, and the raw directory is
+  gitignored.
+- `session_tracker.md` and `evidence/00-baseline.md` now reflect what is in the
+  tree. Session 1 ran and three of its four done-when clauses are met; the
+  fourth is blocked externally on
+  `judge_calibration.calibration_artifact_id`, which is stated rather than
+  rounded up in either direction.
+
+### Note on numpy
+
+Raised repeatedly and settled here so it is not re-litigated: **numpy is not a
+dependency of this project and never has been.** Zero references in any tracked
+file, absent from `.venv`, no mypy plugin or stub configuration. The
+`.mypy_cache/3.12/numpy/` entries are stale contamination from *system* Python
+3.12 -- `__init__.meta.json` records `C:\\Users\\...\\Programs\\Python\\Python312\\...` -- reached via
+`pytest -> _pytest.python_api -> numpy`. The live cache is `.mypy_cache/3.10/`
+and has no numpy directory at all. `.mypy_cache/` is gitignored. No code change
+was needed or made.
+
 ### Fixed (hardening: the gates that could not see what they guarded)
 
 - **The credential gate reported clean on what it never read.**

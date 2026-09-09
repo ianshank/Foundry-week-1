@@ -101,8 +101,16 @@ test-integration: ## Layer 2: integration tests
 test-functional: ## Layer 3: functional tests
 	$(PYTEST) tests/functional/ -v
 
-test-e2e: ## Layer 4: end-to-end tests
-	$(PYTEST) tests/e2e/ -v
+test-e2e: ## Layer 4: end-to-end, including the stdio server over real JSON-RPC
+	# `mcp_server/tests/test_server_e2e_stdio.py` is the strongest end-to-end
+	# test in this repository -- it spawns `python -m foundry_spike_mcp serve`
+	# and drives a real JSON-RPC handshake over stdio across eight cases,
+	# including stdout purity at DEBUG. It lives under `mcp_server/tests/`
+	# because that suite must also run standalone, so this target did not
+	# reach it: the layer named `e2e` was running two `--help` invocations
+	# while the real thing did not count as one. Named here rather than
+	# moved, because moving it would break `cd mcp_server && pytest`.
+	$(PYTEST) tests/e2e/ mcp_server/tests/test_server_e2e_stdio.py -v
 
 test-journey: ## Layer 5: user journey tests
 	$(PYTEST) tests/journey/ -v

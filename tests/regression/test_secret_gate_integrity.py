@@ -159,3 +159,66 @@ def test_a_skip_name_in_an_ancestor_directory_does_not_skip_the_scan(tmp_path: P
 
     with pytest.raises(PromotionRefused, match="secret scan"):
         promote(capture, destination_root=tmp_path / "traces")
+
+
+def test_a_skip_name_inside_the_capture_is_skipped_and_not_copied(tmp_path: Path) -> None:
+    """The other direction, and the one that keeps the fix honest.
+
+    The test above proves a `__pycache__` *ancestor* no longer suppresses the
+    scan. On its own that is passable by deleting `SKIP_NAMES` altogether --
+    which would then make the scan loop and `shutil.copytree`'s
+    `ignore_patterns` disagree in the opposite direction, refusing promotion
+    over a compiled artefact nobody wrote.
+
+    So both halves have to hold at once: a skip name *inside* the capture is
+    genuinely skipped by the scan, and is genuinely absent from what lands in
+    tracked `traces/`. The second assertion is the one that matters -- the
+    original defect lived precisely in the scan loop and the copy filter having
+    different opinions about the same path.
+    """
+    from promote_trace import promote
+
+    capture = tmp_path / "run2"
+    (capture / "__pycache__").mkdir(parents=True)
+    (capture / "__pycache__" / "cached.txt").write_text(
+        "token ghp_" + "E" * 36 + "\n", encoding="utf-8"
+    )
+    (capture / "transcript.txt").write_text("nothing sensitive here\n", encoding="utf-8")
+
+    destination = promote(capture, destination_root=tmp_path / "traces")
+
+    assert destination.is_dir()
+    assert (destination / "transcript.txt").is_file(), "the real capture content was not copied"
+    assert not (destination / "__pycache__").exists(), (
+        "the scan skipped __pycache__ but the copy brought it along -- the two "
+        "halves disagree, which is exactly how the original defect worked"
+    )
+
+
+def test_an_unreadable_summary_does_not_block_promotion(tmp_path: Path) -> None:
+    """A gate must refuse what it can read as bad, not what it cannot read.
+
+    `_no_model_answered` returns False for an absent, unreadable or
+    unrecognised `summary.json`, and `promote_trace.py` says why in prose:
+    manual exports are a supported input and this gate must not refuse a
+    capture it simply does not understand. It refuses only what it can
+    positively read as a run in which nothing was contacted.
+
+    Nothing enforced that, so a later "harden the gate" change could flip it to
+    refuse-on-unreadable and silently break every hand-made export. Note the
+    asymmetry is deliberate and is *not* the pattern the rest of this repository
+    follows: for a **verdict**, unreadable means BLOCKED. This is a promotion
+    filter, not a verdict, and the secret scan below it is the check that
+    actually protects the repository -- it runs either way.
+    """
+    from promote_trace import promote
+
+    capture = tmp_path / "run3"
+    capture.mkdir(parents=True)
+    (capture / "summary.json").write_text("{ this is not json", encoding="utf-8")
+    (capture / "transcript.txt").write_text("nothing sensitive here\n", encoding="utf-8")
+
+    destination = promote(capture, destination_root=tmp_path / "traces")
+
+    assert (destination / "summary.json").is_file()
+    assert (destination / "transcript.txt").is_file()
