@@ -29,7 +29,7 @@ dev = [
     # pre-edit hook's findings irreproducible. Same argument as the
     # `mcp>=1.2,<3` ceiling above: the tool that gates every commit
     # should not change under you.
-    "ruff~=0.16.6",
+    "ruff>=0.16.6,<0.18.0",
     "mypy>=1.11",
 ]
 
